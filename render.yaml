@@ -1,0 +1,58 @@
+    # render.yaml
+    # Place this file in the root of your 'ntcc-project' repository.
+
+    services:
+      # FastAPI Backend Service
+      - type: web
+        name: haven-fastapi-backend
+        env: python
+        rootDir: backend # Points to the 'backend' directory in your repo
+        buildCommand: pip install -r requirements.txt
+        # startCommand is removed; Render will use backend/Procfile
+        # Environment variables for the backend.
+        # You MUST add the actual values for these secrets in the Render Dashboard
+        # under the 'Environment' section for this service AFTER deployment setup.
+        envVars:
+          - key: FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 # Matches your secret name and Python code's os.environ.get()
+            value: # You will paste the base64 string here in Render Dashboard
+          - key: ALGOLIA_API_KEY
+            value: # Paste your Algolia Admin API Key here in Render Dashboard
+          - key: ALGOLIA_APP_ID
+            value: # Paste your Algolia Application ID here in Render Dashboard
+          - key: BREVO_API_KEY
+            value: # Paste your Brevo API Key here in Render Dashboard
+          - key: INSTAMOJO_API_KEY
+            value: # Paste your Instamojo API Key here in Render Dashboard
+          - key: INSTAMOJO_AUTH_TOKEN
+            value: # Paste your Instamojo Auth Token here in Render Dashboard
+          - key: PYTHON_VERSION
+            value: python-3.10.13 # Specifies Python version for Render's build environment
+
+      # Streamlit Frontend Service
+      - type: web
+        name: haven-streamlit-frontend
+        env: python
+        rootDir: frontend # Points to the 'frontend' directory in your repo
+        buildCommand: pip install -r requirements.txt
+        # startCommand is removed; Render will use frontend/Procfile
+        # Environment variables for the frontend.
+        # FASTAPI_BACKEND_URL will be automatically set by Render using internal service discovery.
+        # Other secrets should be pasted in the Render Dashboard.
+        envVars:
+          # Render's internal service discovery for the backend URL
+          - key: FASTAPI_BACKEND_URL
+            value: ${haven-fastapi-backend.url}
+          - key: FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 # Matches your secret name and Python code's os.environ.get()
+            value: # You will paste the base64 string here in Render Dashboard
+          - key: ALGOLIA_API_KEY
+            value: # Paste your Algolia Admin API Key here in Render Dashboard
+          - key: ALGOLIA_APP_ID
+            value: # Paste your Algolia Application ID here in Render Dashboard
+          - key: BREVO_API_KEY
+            value: # Paste your Brevo API Key here in Render Dashboard
+          - key: INSTAMOJO_API_KEY
+            value: # Paste your Instamojo API Key here in Render Dashboard
+          - key: INSTAMOJO_AUTH_TOKEN
+            value: # Paste your Instamojo Auth Token here in Render Dashboard
+          - key: PYTHON_VERSION
+            value: python-3.10.13 # Specifies Python version for Render's build environment
