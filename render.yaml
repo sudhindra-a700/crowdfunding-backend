@@ -1,20 +1,25 @@
-    # render.yaml
-    # Place this file in the root of your 'ntcc-project' repository.
-
-    services:
+services:
       # FastAPI Backend Service
       - type: web
         name: haven-fastapi-backend
         env: python
         rootDir: backend # Points to the 'backend' directory in your repo
-        buildCommand: pip install -r requirements.txt
-        # startCommand is removed; Render will use backend/Procfile
-        # Environment variables for the backend.
-        # You MUST add the actual values for these secrets in the Render Dashboard
-        # under the 'Environment' section for this service AFTER deployment setup.
+        # Enhanced buildCommand: Upgrade pip and setuptools first
+        buildCommand: |
+          echo "--- Upgrading pip and setuptools ---"
+          pip install --upgrade pip setuptools wheel
+          echo "--- Current PWD (should be /opt/render/project/src/backend) ---"
+          pwd
+          echo "--- LS -L in rootDir ---"
+          ls -l
+          echo "--- Attempting to cat requirements.txt ---"
+          cat requirements.txt
+          echo "--- Attempting pip install ---"
+          pip install -r requirements.txt
+        startCommand: gunicorn main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
         envVars:
-          - key: FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 # Matches your secret name and Python code's os.environ.get()
-            value: # You will paste the base64 string here in Render Dashboard
+          - key: FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
+            value: # Paste your base64 string here in Render Dashboard
           - key: ALGOLIA_API_KEY
             value: # Paste your Algolia Admin API Key here in Render Dashboard
           - key: ALGOLIA_APP_ID
@@ -23,26 +28,33 @@
             value: # Paste your Brevo API Key here in Render Dashboard
           - key: INSTAMOJO_API_KEY
             value: # Paste your Instamojo API Key here in Render Dashboard
+            # ... other env vars ...
           - key: INSTAMOJO_AUTH_TOKEN
             value: # Paste your Instamojo Auth Token here in Render Dashboard
           - key: PYTHON_VERSION
-            value: python-3.10.13 # Specifies Python version for Render's build environment
+            value: 3.10.13
 
-      # Streamlit Frontend Service
+      # Streamlit Frontend Service (Apply similar changes if it also fails with setuptools)
       - type: web
         name: haven-streamlit-frontend
         env: python
-        rootDir: frontend # Points to the 'frontend' directory in your repo
-        buildCommand: pip install -r requirements.txt
-        # startCommand is removed; Render will use frontend/Procfile
-        # Environment variables for the frontend.
-        # FASTAPI_BACKEND_URL will be automatically set by Render using internal service discovery.
-        # Other secrets should be pasted in the Render Dashboard.
+        rootDir: frontend # <-- SIMPLIFIED THIS LINE!
+        buildCommand: |
+          echo "--- Upgrading pip and setuptools ---"
+          pip install --upgrade pip setuptools wheel
+          echo "--- Current PWD (should be /opt/render/project/src/frontend) ---"
+          pwd
+          echo "--- LS -L in rootDir ---"
+          ls -l
+          echo "--- Attempting to cat requirements.txt ---"
+          cat requirements.txt
+          echo "--- Attempting pip install ---"
+          pip install -r requirements.txt
+        startCommand: streamlit run front_main.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false
         envVars:
-          # Render's internal service discovery for the backend URL
           - key: FASTAPI_BACKEND_URL
             value: ${haven-fastapi-backend.url}
-          - key: FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 # Matches your secret name and Python code's os.environ.get()
+          - key: FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
             value: # You will paste the base64 string here in Render Dashboard
           - key: ALGOLIA_API_KEY
             value: # Paste your Algolia Admin API Key here in Render Dashboard
@@ -55,4 +67,5 @@
           - key: INSTAMOJO_AUTH_TOKEN
             value: # Paste your Instamojo Auth Token here in Render Dashboard
           - key: PYTHON_VERSION
-            value: python-3.10.13 # Specifies Python version for Render's build environment
+            value: 3.10.13
+    
