@@ -8,8 +8,9 @@ transformers==4.42.3
 torch==2.5.0
 datasets==2.20.0
 shap==0.45.0
-numpy==1.26.4
-pandas==2.2.2
+numpy==1.23.5
+pandas==1.5.3
+Cython==0.29.36
 matplotlib==3.9.0
 scikit-learn==1.5.0
 sentencepiece 
