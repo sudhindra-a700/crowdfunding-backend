@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NGO Fraud Detection PWA</title>
+
+    <!-- PWA Manifest Link -->
+    <link rel="manifest" href="/manifest.json">
+
+    <!-- Theme Color for Browser/OS UI -->
+    <meta name="theme-color" content="#222222">
+
+    <!-- Apple Touch Icon (for iOS "Add to Home Screen") -->
+    <link rel="apple-touch-icon" href="/static/icons/icon-192x192.png">
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Hide scrollbars if iframe fits perfectly */
+            font-family: 'Inter', sans-serif; /* Use Inter font */
+        }
+        iframe {
+            border: none;
+            width: 100vw; /* Full viewport width */
+            height: 100vh; /* Full viewport height */
+            display: block;
+        }
+        /* Basic styling for loading indicator */
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            font-size: 1.5em;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-overlay">
+        Loading application...
+    </div>
+
+    <!-- The iframe will load your Streamlit application -->
+    <!-- IMPORTANT: Replace 'YOUR_STREAMLIT_APP_URL' with the actual URL of your deployed Streamlit app on Cloud Run -->
+    <iframe id="streamlit-iframe" src="YOUR_STREAMLIT_APP_URL" title="NGO Fraud Detection App"></iframe>
+
+    <script>
+        // Register the Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                    .then(registration => {
+                        console.log('Service Worker registered with scope:', registration.scope);
+                    })
+                    .catch(error => {
+                        console.error('Service Worker registration failed:', error);
+                    });
+            });
+        }
+
+        // Hide loading overlay once iframe content starts loading (approx)
+        const iframe = document.getElementById('streamlit-iframe');
+        iframe.onload = function() {
+            document.getElementById('loading-overlay').style.display = 'none';
+        };
+
+        // Fallback for when iframe might not load (e.g., CORS issues, incorrect URL)
+        setTimeout(() => {
+            if (document.getElementById('loading-overlay').style.display !== 'none') {
+                console.warn("Streamlit iframe might not have loaded. Check 'YOUR_STREAMLIT_APP_URL' and CORS settings.");
+                document.getElementById('loading-overlay').innerHTML = "Failed to load application. Please check the URL and try again.";
+            }
+        }, 15000); // 15 seconds timeout
+    </script>
+</body>
+</html>

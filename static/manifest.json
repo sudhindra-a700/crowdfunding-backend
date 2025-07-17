@@ -1,0 +1,21 @@
+{
+  "name": "NGO Fraud Detection PWA",
+  "short_name": "NGO Fraud App",
+  "description": "An AI-powered application for NGO fraud detection and management.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#222222",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

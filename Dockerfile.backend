@@ -1,0 +1,43 @@
+# backend/Dockerfile.backend
+
+# Use an official Python runtime as a parent image
+# backend/Dockerfile.backend
+
+FROM python:3.10-slim-bullseye
+
+WORKDIR /app
+
+# Install system dependencies needed for some Python packages (e.g., pandas)
+# 'git' is REMOVED here because we're manually copying the repo
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    # ca-certificates \ # Keep if needed for other SSL issues
+    # Add any other system dependencies your specific Python packages might need
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the manually downloaded IndicTransToolkit folder
+# IMPORTANT: Ensure 'IndicTransToolkit-main' is the correct folder name after unzipping
+COPY IndicTransToolkit-main /app/IndicTransToolkit-main
+
+# Copy the requirements file
+COPY requirements.txt .
+
+# Install any needed packages specified in requirements.txt
+# This will now install IndicTransToolkit from the local path
+RUN pip install --no-cache-dir -r requirements.txt
+
+ENV GIT_SSL_NO_VERIFY=true
+RUN pip config set global.trusted-host "pypi.org files.pythonhosted.org"
+
+# Copy the rest of the application code
+# This includes main.py, fraud_detection.py, ngo_fraud.csv, DEhli.csv
+# and the new 'static' folder for PWA files.
+COPY . .
+
+# Expose the port that Uvicorn/Gunicorn will run on
+EXPOSE 8000
+
+# Command to run the FastAPI application using Gunicorn with Uvicorn workers.
+# It listens on all network interfaces (0.0.0.0) on port 8000.
+# Adjust 'main:app' if your FastAPI app instance is named differently in main.py
+CMD ["python", "-m", "gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
