@@ -1,7 +1,6 @@
     FROM python:3.10-slim-bullseye
 
     WORKDIR /app
-
 # Dockerfile for FastAPI Backend
 FROM python:3.10-slim-bullseye
 
@@ -10,6 +9,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
+    # Add any other system dependencies your specific Python packages might need
+    # e.g., libatlas-base-dev for numpy/scipy if issues persist
+    # e.g., libsndfile1 for torchaudio if you use it
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -22,8 +24,11 @@ COPY . .
 
 EXPOSE 8000
 
+# Add a HEALTHCHECK to help Render monitor the container
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD curl --fail http://localhost:8000/health || exit 1
+# IMPORTANT: You need to add a /health endpoint to your FastAPI app (see below)
 
-# IMPORTANT CHANGE FOR DEBUGGING: Start a bash shell instead of Gunicorn
-CMD ["/bin/bash"]
+# Simplified CMD for initial debugging. This will just run a shell.
+# We will use Render's Shell to manually start Gunicorn.
+CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
