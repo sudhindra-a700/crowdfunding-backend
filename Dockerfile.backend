@@ -1,34 +1,37 @@
-    FROM python:3.10-slim-bullseye
+FROM python:3.10-slim-bullseye # Using 3.10 as per previous discussions
 
-    WORKDIR /app
-# Dockerfile for FastAPI Backend
-FROM python:3.10-slim-bullseye
-
+# Set the working directory in the container
 WORKDIR /app
 
+# Install system dependencies needed for some Python packages
+# 'build-essential' for compilers, 'git' for git-based dependencies, 'curl' for healthchecks
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
-    # Add any other system dependencies your specific Python packages might need
-    # e.g., libatlas-base-dev for numpy/scipy if issues persist
-    # e.g., libsndfile1 for torchaudio if you use it
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy the requirements file first to leverage Docker cache
 COPY requirements.txt .
 
+# Upgrade pip and install Python dependencies
+# --no-cache-dir is good for production builds to keep image size down
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of the application code
+# This includes main.py, fraud_detection.py, ngo_fraud.csv, static/ folder, etc.
 COPY . .
 
+# Expose the port that Gunicorn will run on internally
 EXPOSE 8000
 
-# Add a HEALTHCHECK to help Render monitor the container
+# Add a HEALTHCHECK to help Render monitor the container.
+# It checks if the /health endpoint responds successfully.
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD curl --fail http://localhost:8000/health || exit 1
-# IMPORTANT: You need to add a /health endpoint to your FastAPI app (see below)
 
-# Simplified CMD for initial debugging. This will just run a shell.
-# We will use Render's Shell to manually start Gunicorn.
+# Command to run the FastAPI application using Gunicorn with Uvicorn workers.
+# It listens on all network interfaces (0.0.0.0) on the exposed port 8000.
+# Render will map its external $PORT to this internal port 8000.
 CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
