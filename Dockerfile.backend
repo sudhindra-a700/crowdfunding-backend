@@ -1,36 +1,10 @@
 # Dockerfile for FastAPI Backend
-# Use a specific Python 3.10 slim image for smaller size and consistency
 FROM python:3.10-slim-bullseye
-
-# Set the working directory inside the container
 WORKDIR /app
-
-# Install system dependencies needed for some Python packages (like pandas)
-# 'build-essential' provides compilers, 'libpq-dev' for psycopg2 if you use PostgreSQL, etc.
-# 'git' might be needed if you have git-based dependencies in requirements.txt
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    # Add any other system dependencies your specific Python packages might need
-    # e.g., libatlas-base-dev for numpy/scipy if issues persist
-    # e.g., libsndfile1 for torchaudio if you use it
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements.txt first to leverage Docker cache
+RUN apt-get update && apt-get install -y build-essential git && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
-
-# Upgrade pip and setuptools first to avoid build_meta issues
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of your application code
 COPY . .
-
-# Expose the port your FastAPI app will listen on
 EXPOSE $PORT
-
-# Command to run your FastAPI application using Gunicorn
-# Render will inject the $PORT environment variable
 CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:$PORT"]
