@@ -26,6 +26,9 @@ warnings.filterwarnings("ignore")
 # --- Initialize FastAPI app ---
 app = FastAPI(title="HAVEN Backend Service (Cloud Ready with Algolia & Payments)")
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 # --- CORS Configuration ---
 # This is crucial for allowing your Streamlit frontend to communicate with FastAPI
 # In a production environment, replace "*" with the specific domain(s) of your Streamlit app
