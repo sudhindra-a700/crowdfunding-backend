@@ -2,26 +2,39 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
 import os
 import pandas as pd
 import joblib # Assuming you might load a model with joblib
 import json # For Firebase config if it's JSON
 import random # For dummy data/predictions
+import sys # Import sys for sys.exit()
+import logging # Import logging for detailed output
+
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import urllib.parse
 
-# Firebase Admin SDK imports (ensure these are installed in requirements.txt)
+from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
+
+# Firebase Admin SDK imports
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, messaging
 
-# Algolia Search Client (ensure installed)
+# Algolia Search Client
 from algoliasearch.search_client import SearchClient
 
 # Suppress warnings for cleaner output
 import warnings
 warnings.filterwarnings("ignore")
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # --- Initialize FastAPI app ---
 app = FastAPI(title="HAVEN Backend Service (Cloud Ready with Algolia & Payments)")
@@ -29,121 +42,114 @@ app = FastAPI(title="HAVEN Backend Service (Cloud Ready with Algolia & Payments)
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
 # --- CORS Configuration ---
-# This is crucial for allowing your Streamlit frontend to communicate with FastAPI
-# In a production environment, replace "*" with the specific domain(s) of your Streamlit app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for development/testing
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Define Paths ---
 BASE_DIR = Path(__file__).resolve().parent
 
-# --- Load Machine Learning Model and Data (Adjust as per your fraud_detection.py) ---
-# Assuming fraud_detection.py contains the logic and potentially loads a model.
-# If your model is a saved file (e.g., .pkl, .joblib), you'd load it here.
-# For now, we'll assume fraud_detection.py handles its own model loading/fine-tuning.
-# Ensure 'ngo_fraud.csv' and 'DEhli.csv' are in the backend directory.
-NGO_FRAUD_DATA_PATH = BASE_DIR / "ngo_fraud.csv"
-try:
-    ngo_fraud_df = pd.read_csv(NGO_FRAUD_DATA_PATH)
-except FileNotFoundError:
-    print("WARNING: ngo_fraud.csv not found. Ensure it's in the backend directory.")
-    ngo_fraud_df = pd.DataFrame() # Empty DataFrame if not found
+# --- Global variables for IndicTrans2 model, tokenizer, and processor ---
+indictrans2_model = None
+indictrans2_tokenizer = None
+indictrans2_processor = None
+DEVICE = "cpu" # Default to CPU for Render free tier. Change to "cuda" if GPU is available and configured.
 
-# --- Load Secrets from Environment Variables ---
-# These environment variables will be injected by Google Cloud Run from Secret Manager
-FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
-ALGOLIA_API_KEY = os.environ.get("ALGOLIA_API_KEY")
-ALGOLIA_APP_ID = os.environ.get("ALGOLIA_APP_ID")
-BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
-INSTAMOJO_API_KEY = os.environ.get("INSTAMOJO_API_KEY")
-INSTAMOJO_AUTH_TOKEN = os.environ.get("INSTAMOJO_AUTH_TOKEN")
-
-# Print loaded secrets (for debugging, remove or secure in production)
-print(f"Firebase Config Loaded: {'Yes' if FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 else 'No'}")
-print(f"Algolia API Key Loaded: {'Yes' if ALGOLIA_API_KEY else 'No'}")
-print(f"Algolia App ID Loaded: {'Yes' if ALGOLIA_APP_ID else 'No'}")
-print(f"Brevo API Key Loaded: {'Yes' if BREVO_API_KEY else 'No'}")
-print(f"Instamojo API Key Loaded: {'Yes' if INSTAMOJO_API_KEY else 'No'}")
-print(f"Instamojo Auth Token Loaded: {'Yes' if INSTAMOJO_AUTH_TOKEN else 'No'}")
-
-# --- Firebase Initialization ---
+# --- Global Firebase and Algolia clients ---
 db = None
-try:
-    if FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64:
-        import base64
-        service_account_info = json.loads(base64.b64decode(FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64).decode("utf-8"))
-        cred = credentials.Certificate(service_account_info)
-    else:
-        # Fallback for local development if no base64 config is set
-        # In Cloud Run, FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 should always be set.
-        cred = credentials.ApplicationDefault() # Assumes GOOGLE_APPLICATION_CREDENTIALS env var or default service account
-
-    if not firebase_admin._apps: # Initialize only if not already initialized
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase Admin SDK initialized successfully.")
-except Exception as e:
-    print(f"Error initializing Firebase Admin SDK: {e}")
-    print("Ensure FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 environment variable is set correctly, or GOOGLE_APPLICATION_CREDENTIALS points to a valid key file.")
-
-# --- Algolia Client Initialization ---
 algolia_client = None
 algolia_index = None
-try:
-    if ALGOLIA_APP_ID and ALGOLIA_API_KEY:
-        algolia_client = SearchClient(ALGOLIA_APP_ID, ALGOLIA_API_KEY)
-        algolia_index = algolia_client.init_index("campaigns") # Assuming your index name is "campaigns"
-        print(f"Algolia client initialized for index: campaigns")
-    else:
-        print("Algolia API keys not configured. Search functionality will be limited to Firestore fallback.")
-except Exception as e:
-    print(f"Error initializing Algolia client: {e}")
-    algolia_client = None
-    algolia_index = None
 
-# --- PWA Static Files Serving ---
-# This path needs to exist in your Docker image
-STATIC_DIR = BASE_DIR / "static"
-# Ensure the static directory and its sub-directories are created for local testing
-# In Dockerfile, you'll copy these files directly.
-if not STATIC_DIR.exists():
-    STATIC_DIR.mkdir()
-if not (STATIC_DIR / "icons").exists():
-    (STATIC_DIR / "icons").mkdir()
+# --- Load Machine Learning Model and Data (Adjust as per your fraud_detection.py) ---
+NGO_FRAUD_DATA_PATH = BASE_DIR / "ngo_fraud.csv"
+ngo_fraud_df = pd.DataFrame() # Initialize as empty, will be loaded in startup
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# --- Authentication ---
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/verify-token")
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_pwa_shell():
-    """Serves the main PWA HTML shell (index.html)."""
-    index_html_path = STATIC_DIR / "index.html"
-    if not index_html_path.exists():
-        raise HTTPException(status_code=404, detail="index.html not found in static directory.")
-    return FileResponse(index_html_path)
+async def get_current_user(id_token: str = Depends(oauth2_scheme)):
+    if not firebase_admin._apps:
+        logger.error("Firebase not initialized in get_current_user.")
+        raise HTTPException(status_code=500, detail="Firebase not initialized.")
+    try:
+        decoded_token = auth.verify_id_token(id_token)
+        uid = decoded_token["uid"]
+        email = decoded_token.get("email")
+        role = decoded_token.get("role", "user")
+        return UserInfo(uid=uid, email=email, role=role)
+    except Exception as e:
+        logger.error(f"Firebase ID token verification failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-@app.get("/manifest.json", response_class=FileResponse)
-async def serve_manifest():
-    """Serves the PWA manifest file."""
-    manifest_path = STATIC_DIR / "manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(status_code=404, detail="manifest.json not found in static directory.")
-    return FileResponse(manifest_path, media_type="application/manifest+json")
+async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
 
-@app.get("/sw.js", response_class=FileResponse)
-async def serve_service_worker():
-    """Serves the PWA service worker file."""
-    sw_path = STATIC_DIR / "sw.js"
-    if not sw_path.exists():
-        raise HTTPException(status_code=404, detail="sw.js not found in static directory.")
-    return FileResponse(sw_path, media_type="application/javascript")
+# --- Real IndicTrans2 Translation Function ---
+def indictrans2_translate(text: str, source_lang: str, target_lang: str) -> str:
+    global indictrans2_model, indictrans2_tokenizer, indictrans2_processor
+    import torch # Import torch locally to ensure it's available for this function
 
-# --- Pydantic Models (from your original main.py) ---
+    if not indictrans2_model or not indictrans2_tokenizer or not indictrans2_processor:
+        logger.warning("IndicTrans2 model not initialized. Translation will not work.")
+        return f"{text} (Translation Service Unavailable)"
+
+    try:
+        lang_map = {
+            "en": "eng_Latn", "hi": "hin_Deva", "bn": "ben_Beng", "ta": "tam_Taml",
+            "te": "tel_Telu", "mr": "mar_Deva", "gu": "guj_Gujr", "pa": "pan_Guru",
+            "kn": "kan_Knda", "ml": "mal_Mlym", "or": "ori_Orya", "as": "asm_Beng",
+            "ur": "urd_Arab", "ne": "nep_Deva", "si": "sin_Sinh", "my": "mya_Mymr",
+        }
+
+        src_lang_code = lang_map.get(source_lang, None)
+        tgt_lang_code = lang_map.get(target_lang, None)
+
+        if not src_lang_code or not tgt_lang_code:
+            return f"{text} (Unsupported language code for IndicTrans2: {source_lang} or {target_lang})"
+
+        batch = indictrans2_processor.preprocess_batch([text], src_lang=src_lang_code, tgt_lang=tgt_lang_code)
+
+        inputs = indictrans2_tokenizer(
+            batch,
+            truncation=True,
+            padding="longest",
+            return_tensors="pt",
+            return_attention_mask=True,
+        ).to(DEVICE)
+
+        with torch.no_grad():
+            generated_tokens = indictrans2_model.generate(
+                **inputs,
+                use_cache=True,
+                min_length=0,
+                max_length=256,
+                num_beams=5,
+                num_return_sequences=1,
+            )
+
+        translated_text = indictrans2_tokenizer.batch_decode(generated_tokens.detach().cpu().tolist(), skip_special_tokens=True)[0]
+        return translated_text
+
+    except Exception as e:
+        logger.error(f"Error during real IndicTrans2 translation: {e}", exc_info=True)
+        return f"{text} (Translation Failed: {e})"
+
+# --- Pydantic Models ---
 class UserLogin(BaseModel):
     id_token: str
 
@@ -214,44 +220,44 @@ class InitiatePaymentRequest(BaseModel):
     donor_email: Optional[str] = "anonymous@example.com"
     donor_phone: Optional[str] = "9999999999"
 
-# --- Authentication (from your original main.py) ---
-from fastapi.security import OAuth2PasswordBearer
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/verify-token")
+class CampaignBulkUploadRequest(BaseModel):
+    campaigns: List[CampaignCreateRequest]
 
-async def get_current_user(id_token: str = Depends(oauth2_scheme)):
-    if not firebase_admin._apps: # Check if Firebase is initialized
-        raise HTTPException(status_code=500, detail="Firebase not initialized.")
-    try:
-        decoded_token = auth.verify_id_token(id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email")
-        role = decoded_token.get("role", "user")
-        return UserInfo(uid=uid, email=email, role=role)
-    except Exception as e:
-        print(f"Firebase ID token verification failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
-async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
-    return current_user
+# --- API Endpoints ---
 
-# --- API Endpoints (from your original main.py, with minor adjustments) ---
+@app.get("/", response_class=HTMLResponse)
+async def serve_pwa_shell():
+    """Serves the main PWA HTML shell (index.html)."""
+    index_html_path = STATIC_DIR / "index.html"
+    if not index_html_path.exists():
+        logger.error(f"index.html not found at {index_html_path}")
+        raise HTTPException(status_code=404, detail="index.html not found in static directory.")
+    return FileResponse(index_html_path)
 
-@app.get("/")
-async def read_root():
-    return {"message": "HAVEN Backend Service is running!"} # This will be overridden by serve_pwa_shell if PWA is enabled
+@app.get("/manifest.json", response_class=FileResponse)
+async def serve_manifest():
+    """Serves the PWA manifest file."""
+    manifest_path = STATIC_DIR / "manifest.json"
+    if not manifest_path.exists():
+        logger.error(f"manifest.json not found at {manifest_path}")
+        raise HTTPException(status_code=404, detail="manifest.json not found in static directory.")
+    return FileResponse(manifest_path, media_type="application/manifest+json")
+
+@app.get("/sw.js", response_class=FileResponse)
+async def serve_service_worker():
+    """Serves the PWA service worker file."""
+    sw_path = STATIC_DIR / "sw.js"
+    if not sw_path.exists():
+        logger.error(f"sw.js not found at {sw_path}")
+        raise HTTPException(status_code=404, detail="sw.js not found in static directory.")
+    return FileResponse(sw_path, media_type="application/javascript")
+
 
 @app.post("/verify-token", response_model=UserInfo)
 async def verify_firebase_id_token(user_login: UserLogin):
     if not firebase_admin._apps:
+        logger.error("Firebase not initialized in /verify-token endpoint.")
         raise HTTPException(status_code=500, detail="Firebase not initialized.")
     try:
         decoded_token = auth.verify_id_token(user_login.id_token)
@@ -260,82 +266,24 @@ async def verify_firebase_id_token(user_login: UserLogin):
         role = decoded_token.get("role", "user")
         return UserInfo(uid=uid, email=email, role=role)
     except Exception as e:
-        print(f"Firebase ID token verification failed: {e}")
+        logger.error(f"Firebase ID token verification failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-# --- Real IndicTrans2 Translation Function (from your original main.py) ---
-# Global variables for IndicTrans2 model, tokenizer, and processor
-# These will be initialized in the startup event to ensure Firebase is ready first
-indictrans2_model = None
-indictrans2_tokenizer = None
-indictrans2_processor = None
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu" # Define device here
-
-def indictrans2_translate(text: str, source_lang: str, target_lang: str) -> str:
-    global indictrans2_model, indictrans2_tokenizer, indictrans2_processor
-    import torch # Import torch locally if not already imported globally
-
-    if not indictrans2_model or not indictrans2_tokenizer or not indictrans2_processor:
-        print("IndicTrans2 model not initialized. Translation will not work.")
-        return f"{text} (Translation Service Unavailable)"
-
-    try:
-        lang_map = {
-            "en": "eng_Latn", "hi": "hin_Deva", "bn": "ben_Beng", "ta": "tam_Taml",
-            "te": "tel_Telu", "mr": "mar_Deva", "gu": "guj_Gujr", "pa": "pan_Guru",
-            "kn": "kan_Knda", "ml": "mal_Mlym", "or": "ori_Orya", "as": "asm_Beng",
-            "ur": "urd_Arab", "ne": "nep_Deva", "si": "sin_Sinh", "my": "mya_Mymr",
-        }
-
-        src_lang_code = lang_map.get(source_lang, None)
-        tgt_lang_code = lang_map.get(target_lang, None)
-
-        if not src_lang_code or not tgt_lang_code:
-            return f"{text} (Unsupported language code for IndicTrans2: {source_lang} or {target_lang})"
-
-        batch = indictrans2_processor.preprocess_batch([text], src_lang=src_lang_code, tgt_lang=tgt_lang_code)
-
-        inputs = indictrans2_tokenizer(
-            batch,
-            truncation=True,
-            padding="longest",
-            return_tensors="pt",
-            return_attention_mask=True,
-        ).to(DEVICE)
-
-        with torch.no_grad():
-            generated_tokens = indictrans2_model.generate(
-                **inputs,
-                use_cache=True,
-                min_length=0,
-                max_length=256,
-                num_beams=5,
-                num_return_sequences=1,
-            )
-
-        translated_text = indictrans2_tokenizer.batch_decode(generated_tokens.detach().cpu().tolist(), skip_special_tokens=True)[0]
-        return translated_text
-
-    except Exception as e:
-        print(f"Error during real IndicTrans2 translation: {e}")
-        return f"{text} (Translation Failed: {e})"
-
-class TranslationRequest(BaseModel):
-    campaign_id: str
-    field: str
-    target_language: str
-
 @app.post("/translate")
 async def translate_text_endpoint(
     request: TranslationRequest,
     current_user: UserInfo = Depends(get_current_user)
 ):
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
-    if not indictrans2_model: raise HTTPException(status_code=500, detail="Translation model not initialized.")
+    if not db:
+        logger.error("Firestore not initialized in /translate endpoint.")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if not indictrans2_model:
+        logger.error("Translation model not initialized in /translate endpoint.")
+        raise HTTPException(status_code=500, detail="Translation model not initialized.")
 
     campaign_ref = db.collection("campaigns").document(request.campaign_id)
     campaign_doc = campaign_ref.get()
@@ -381,8 +329,12 @@ async def get_campaigns(
     language: Optional[str] = "en",
     current_user: UserInfo = Depends(get_current_user)
 ):
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
-    if language != "en" and not indictrans2_model: raise HTTPException(status_code=500, detail="Translation model not initialized for non-English content.")
+    if not db:
+        logger.error("Firestore not initialized in /campaigns endpoint.")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if language != "en" and not indictrans2_model:
+        logger.error("Translation model not initialized for non-English content in /campaigns endpoint.")
+        raise HTTPException(status_code=500, detail="Translation model not initialized for non-English content.")
 
     campaigns_ref = db.collection("campaigns")
     campaign_docs = campaigns_ref.stream()
@@ -434,7 +386,9 @@ async def get_campaigns(
 async def get_campaign_stats(
     current_user: UserInfo = Depends(get_current_user)
 ):
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if not db:
+        logger.error("Firestore not initialized in /campaign-stats endpoint.")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
 
     campaigns_ref = db.collection("campaigns")
     campaign_docs = campaigns_ref.stream()
@@ -475,9 +429,11 @@ async def search_campaigns(
             search_results = algolia_index.search(query.query)
             return [c for c in search_results.get("hits", []) if c.get('verification_status') != 'Rejected']
         except Exception as e:
-            print(f"Algolia search error: {e}. Falling back to Firestore search.")
+            logger.warning(f"Algolia search error: {e}. Falling back to Firestore search.", exc_info=True)
 
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if not db:
+        logger.error("Firestore not initialized in /search endpoint (fallback).")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
 
     search_term_lower = query.query.lower()
     campaigns_ref = db.collection("campaigns")
@@ -503,7 +459,7 @@ async def send_notification(
 ):
     results = {}
 
-    if request.recipient_email and BREVO_API_KEY: # Check if BREVO_API_KEY is loaded
+    if request.recipient_email and BREVO_API_KEY:
         try:
             # This is a mock. In real code, you'd use a Brevo SDK or requests.post to Brevo API
             # For example:
@@ -512,12 +468,13 @@ async def send_notification(
             # brevo_response = requests.post("https://api.brevo.com/v3/smtp/email", headers=headers, json=payload)
             # brevo_response.raise_for_status()
             results["email"] = "Sent successfully (mocked via configured API)"
-        except requests.exceptions.RequestException as e:
-            results["email"] = f"Email sending failed (Brevo API error): {e}"
+            logger.info(f"Mock email sent to {request.recipient_email}")
         except Exception as e:
-            results["email"] = f"Email sending failed: {e}"
+            results["email"] = f"Email sending failed (Brevo API error): {e}"
+            logger.error(f"Email sending failed to {request.recipient_email}: {e}", exc_info=True)
     elif request.recipient_email:
         results["email"] = f"Mock email sent: {request.message} (Brevo API key not configured)"
+        logger.warning("Brevo API key not configured for email sending.")
 
     if request.device_token:
         try:
@@ -530,10 +487,13 @@ async def send_notification(
             )
             response = messaging.send(message)
             results["push"] = f"Sent successfully: {response}"
+            logger.info(f"FCM push notification sent to device: {request.device_token}")
         except Exception as e:
             results["push"] = f"FCM push notification failed: {e}"
+            logger.error(f"FCM push notification failed for device {request.device_token}: {e}", exc_info=True)
     else:
         results["push"] = f"Mock push notification not sent (no device token provided)."
+        logger.warning("No device token provided for push notification.")
 
     return results
 
@@ -542,13 +502,16 @@ async def check_fraud(
     request: FraudCheckRequest,
     current_user: UserInfo = Depends(get_current_user)
 ):
-    # Local import of fraud_detection.py to avoid circular dependencies if it imports main.py
-    from fraud_detection import predict_fraud
+    from fraud_detection import predict_fraud # Local import
     org_data = request.dict()
-    fraud_score, explanation, plot_path, verification_details = predict_fraud(
-        organization_data=org_data,
-        api_key_trustcheckr="test_key" # You might pass a real TrustCheckr key here if you have one
-    )
+    try:
+        fraud_score, explanation, plot_path, verification_details = predict_fraud(
+            organization_data=org_data,
+            api_key_trustcheckr="test_key" # You might pass a real TrustCheckr key here if you have one
+        )
+    except Exception as e:
+        logger.error(f"Error during fraud prediction: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Fraud prediction failed: {e}")
 
     verification_status = ""
     if fraud_score <= 0.20:
@@ -561,15 +524,19 @@ async def check_fraud(
     if db:
         verification_collection = db.collection("organization_verifications")
         doc_id = org_data.get("org_name", "unknown_org").replace(" ", "_").lower() + "_" + str(random.randint(1000, 9999))
-        verification_collection.document(doc_id).set({
-            "org_name": org_data.get("org_name"),
-            "fraud_score": fraud_score,
-            "explanation": explanation,
-            "verification_details": verification_details,
-            "verification_status": verification_status,
-            "timestamp": firestore.SERVER_TIMESTAMP,
-            "checked_by_uid": current_user.uid
-        })
+        try:
+            verification_collection.document(doc_id).set({
+                "org_name": org_data.get("org_name"),
+                "fraud_score": fraud_score,
+                "explanation": explanation,
+                "verification_details": verification_details,
+                "verification_status": verification_status,
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "checked_by_uid": current_user.uid
+            })
+            logger.info(f"Fraud check result saved for {org_data.get('org_name')}")
+        except Exception as e:
+            logger.error(f"Error saving fraud check result to Firestore: {e}", exc_info=True)
 
     return {
         "fraud_score": fraud_score,
@@ -584,7 +551,9 @@ async def create_campaign(
     request: CampaignCreateRequest,
     current_user: UserInfo = Depends(get_admin_user)
 ):
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if not db:
+        logger.error("Firestore not initialized in /create-campaign endpoint.")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
 
     try:
         campaign_data = request.dict()
@@ -624,6 +593,7 @@ async def create_campaign(
             campaign_data["verification_status"] = "Needs Manual Review"
         else:
             campaign_data["verification_status"] = "Rejected"
+            logger.info(f"Campaign '{campaign_data['name']}' rejected due to high fraud risk (score: {fraud_score:.2f}).")
             return {"campaign_id": None, "message": "Campaign rejected due to high fraud risk."}
 
         doc_ref = db.collection("campaigns").add(campaign_data)
@@ -633,22 +603,21 @@ async def create_campaign(
             try:
                 algolia_object = {**campaign_data, "objectID": campaign_id}
                 algolia_index.save_object(algolia_object).wait()
-                print(f"Campaign {campaign_id} indexed in Algolia.")
+                logger.info(f"Campaign {campaign_id} indexed in Algolia.")
             except Exception as e:
-                print(f"Error indexing campaign {campaign_id} in Algolia: {e}")
+                logger.error(f"Error indexing campaign {campaign_id} in Algolia: {e}", exc_info=True)
 
         return {"campaign_id": campaign_id, "message": "Campaign created successfully with initial verification status."}
     except Exception as e:
-        print(f"Error creating campaign: {e}")
+        logger.error(f"Error creating campaign: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to create campaign: {e}")
 
 
-class CampaignBulkUploadRequest(BaseModel):
-    campaigns: List[CampaignCreateRequest]
-
 @app.post("/bulk-upload-campaigns", response_model=dict, dependencies=[Depends(get_admin_user)])
 async def bulk_upload_campaigns(request: CampaignBulkUploadRequest, current_user: UserInfo = Depends(get_admin_user)):
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if not db:
+        logger.error("Firestore not initialized in /bulk-upload-campaigns endpoint.")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
 
     uploaded_count = 0
     failed_count = 0
@@ -695,7 +664,7 @@ async def bulk_upload_campaigns(request: CampaignBulkUploadRequest, current_user
                 continue
 
             new_doc_ref = db.collection("campaigns").document()
-            batch.set(new_doc_ref, campaign_data) # Use campaign_data here, not campaign_with_defaults
+            batch.set(new_doc_ref, campaign_data)
 
             algolia_object = {**campaign_data, "objectID": new_doc_ref.id}
             algolia_objects_to_save.append(algolia_object)
@@ -704,15 +673,24 @@ async def bulk_upload_campaigns(request: CampaignBulkUploadRequest, current_user
         except Exception as e:
             failed_count += 1
             errors.append(f"Failed to upload campaign '{campaign_data_req.name}': {e}")
+            logger.error(f"Error processing bulk upload campaign '{campaign_data_req.name}': {e}", exc_info=True)
 
-    batch.commit()
+    try:
+        batch.commit()
+        logger.info(f"Firestore batch commit for bulk upload completed. Uploaded: {uploaded_count}, Failed: {failed_count}")
+    except Exception as e:
+        logger.error(f"Error committing Firestore batch for bulk upload: {e}", exc_info=True)
+        failed_count += uploaded_count # Mark all as failed if batch commit fails
+        errors.append(f"Failed to commit all campaigns to Firestore: {e}")
+
 
     if algolia_index and algolia_objects_to_save:
         try:
             algolia_index.save_objects(algolia_objects_to_save).wait()
-            print(f"Successfully indexed {len(algolia_objects_to_save)} campaigns in Algolia batch.")
+            logger.info(f"Successfully indexed {len(algolia_objects_to_save)} campaigns in Algolia batch.")
         except Exception as e:
-                print(f"Error indexing campaigns in Algolia batch: {e}")
+                logger.error(f"Error indexing campaigns in Algolia batch: {e}", exc_info=True)
+                errors.append(f"Failed to index campaigns in Algolia: {e}")
 
     if failed_count > 0:
         raise HTTPException(
@@ -726,7 +704,9 @@ async def initiate_payment(
     request: InitiatePaymentRequest,
     current_user: UserInfo = Depends(get_current_user)
 ):
-    if not db: raise HTTPException(status_code=500, detail="Firestore not initialized.")
+    if not db:
+        logger.error("Firestore not initialized in /initiate-payment endpoint.")
+        raise HTTPException(status_code=500, detail="Firestore not initialized.")
 
     campaign_id = request.campaign_id
     amount = request.amount
@@ -755,12 +735,11 @@ async def initiate_payment(
 
     try:
         if INSTAMOJO_API_KEY and INSTAMOJO_AUTH_TOKEN:
-            # Mock Instamojo URL for demonstration
             payment_url = f"https://mock.instamojo.com/payment/{transaction_id}/?amount={amount}&purpose={urllib.parse.quote(campaign_data['name'])}"
             payment_status = "initiated_instamojo_mock"
-            print(f"Mock Instamojo Payment URL generated: {payment_url}")
+            logger.info(f"Mock Instamojo Payment URL generated: {payment_url}")
 
-        elif payment_method == "upi": # Changed from "upi_direct" for simplicity
+        elif payment_method == "upi":
             mock_vpa = "havenplatform@upi"
             mock_payee_name = urllib.parse.quote(f"HAVEN - {campaign_author}")
             mock_transaction_ref = f"HAVEN{random.randint(10000000, 99999999)}"
@@ -771,12 +750,12 @@ async def initiate_payment(
                 f"&tid={transaction_id}&mc=8999"
             )
             payment_status = "initiated_upi_mock"
-            print(f"Mock UPI Deep Link generated: {payment_url}")
+            logger.info(f"Mock UPI Deep Link generated: {payment_url}")
 
         elif payment_method == "card":
             payment_url = "https://mock-card-payment-gateway.com/checkout"
             payment_status = "initiated_card_mock"
-            print(f"Mock Card Payment URL generated: {payment_url}")
+            logger.info(f"Mock Card Payment URL generated: {payment_url}")
 
         else:
             raise ValueError("Unsupported payment method or Instamojo API keys not configured.")
@@ -794,7 +773,7 @@ async def initiate_payment(
             "donor_email": donor_email,
             "donor_phone": donor_phone
         })
-        print(f"Payment intent {transaction_id} recorded in Firestore.")
+        logger.info(f"Payment intent {transaction_id} recorded in Firestore.")
 
         return {
             "message": "Payment initiated successfully.",
@@ -804,124 +783,231 @@ async def initiate_payment(
         }
 
     except Exception as e:
-        print(f"Error initiating payment: {e}")
+        logger.error(f"Error initiating payment: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to initiate payment: {e}")
 
 @app.on_event("startup")
 async def startup_event():
-    global indictrans2_model, indictrans2_tokenizer, indictrans2_processor
+    global indictrans2_model, indictrans2_tokenizer, indictrans2_processor, db, algolia_client, algolia_index, ngo_fraud_df, DEVICE
+
+    logger.info("Application startup event triggered.")
+
+    # --- Load Secrets from Environment Variables ---
+    FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
+    ALGOLIA_API_KEY = os.environ.get("ALGOLIA_API_KEY")
+    ALGOLIA_APP_ID = os.environ.get("ALGOLIA_APP_ID")
+    BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
+    INSTAMOJO_API_KEY = os.environ.get("INSTAMOJO_API_KEY")
+    INSTAMOJO_AUTH_TOKEN = os.environ.get("INSTAMOJO_AUTH_TOKEN")
+
+    logger.info(f"Secrets Loaded: Firebase: {'Yes' if FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 else 'No'}, Algolia API Key: {'Yes' if ALGOLIA_API_KEY else 'No'}, Algolia App ID: {'Yes' if ALGOLIA_APP_ID else 'No'}, Brevo: {'Yes' if BREVO_API_KEY else 'No'}, Instamojo API Key: {'Yes' if INSTAMOJO_API_KEY else 'No'}, Instamojo Auth Token: {'Yes' if INSTAMOJO_AUTH_TOKEN else 'No'}")
+
+
+    # --- Firebase Initialization ---
+    try:
+        logger.info("Attempting Firebase Admin SDK initialization...")
+        if FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64:
+            import base64
+            service_account_info = json.loads(base64.b64decode(FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64).decode("utf-8"))
+            cred = credentials.Certificate(service_account_info)
+        else:
+            logger.warning("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 not found. Attempting ApplicationDefault credentials.")
+            cred = credentials.ApplicationDefault() # Fallback for local development or GCP default service account
+
+        if not firebase_admin._apps: # Initialize only if not already initialized
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        logger.info("Firebase Admin SDK initialized successfully.")
+    except Exception as e:
+        logger.critical(f"FATAL ERROR: Firebase Admin SDK initialization failed: {e}", exc_info=True)
+        sys.exit(1) # Critical error, exit application
+
+
+    # --- Algolia Client Initialization ---
+    try:
+        logger.info("Attempting Algolia client initialization...")
+        if ALGOLIA_APP_ID and ALGOLIA_API_KEY:
+            algolia_client = SearchClient(ALGOLIA_APP_ID, ALGOLIA_API_KEY)
+            algolia_index = algolia_client.init_index("campaigns")
+            logger.info(f"Algolia client initialized for index: campaigns")
+        else:
+            logger.warning("Algolia API keys not configured. Search functionality will be limited to Firestore fallback.")
+            algolia_client = None
+            algolia_index = None
+    except Exception as e:
+        logger.error(f"Error initializing Algolia client: {e}", exc_info=True)
+        algolia_client = None
+        algolia_index = None
+
+
+    # --- PWA Static Files Serving ---
+    STATIC_DIR = BASE_DIR / "static"
+    try:
+        if not STATIC_DIR.exists():
+            STATIC_DIR.mkdir() # This might not be needed in Docker as files are copied
+            logger.info(f"Created static directory: {STATIC_DIR}")
+        if not (STATIC_DIR / "icons").exists():
+            (STATIC_DIR / "icons").mkdir() # This might not be needed in Docker
+            logger.info(f"Created static/icons directory: {STATIC_DIR / 'icons'}")
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+        logger.info(f"Mounted static files from: {STATIC_DIR}")
+    except Exception as e:
+        logger.critical(f"FATAL ERROR: Could not set up static file serving: {e}", exc_info=True)
+        sys.exit(1)
+
+
+    # --- Load NGO Fraud Data ---
+    try:
+        logger.info(f"Attempting to load NGO fraud data from {NGO_FRAUD_DATA_PATH}...")
+        if NGO_FRAUD_DATA_PATH.exists():
+            ngo_fraud_df = pd.read_csv(NGO_FRAUD_DATA_PATH)
+            logger.info(f"NGO fraud data loaded successfully. Shape: {ngo_fraud_df.shape}")
+        else:
+            logger.warning(f"NGO fraud data file not found at {NGO_FRAUD_DATA_PATH}. Fraud detection model fine-tuning may be affected.")
+            ngo_fraud_df = pd.DataFrame() # Ensure it's an empty DataFrame if file is missing
+    except Exception as e:
+        logger.critical(f"FATAL ERROR: Could not load NGO fraud data: {e}", exc_info=True)
+        sys.exit(1) # Critical error, exit application
+
 
     # --- Initialize IndicTrans2 Model ---
     try:
+        logger.info("Attempting to load IndicTrans2 model...")
         import torch # Ensure torch is imported for this section
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        from IndicTransToolkit.processor import IndicProcessor # Ensure this is accessible
+        # Ensure IndicTransToolkit is correctly installed and accessible
+        # If IndicTransToolkit is a local dependency, ensure it's copied correctly in Dockerfile
+        from IndicTransToolkit.processor import IndicProcessor
+
+        # Check if GPU is available and set DEVICE
+        if torch.cuda.is_available():
+            DEVICE = "cuda"
+            logger.info("CUDA (GPU) is available. Using GPU for IndicTrans2.")
+        else:
+            DEVICE = "cpu"
+            logger.info("CUDA (GPU) is not available. Using CPU for IndicTrans2.")
 
         model_name = "ai4bharat/indictrans2-en-indic-1B"
-        print(f"Loading IndicTrans2 model '{model_name}' on {DEVICE}...")
+        logger.info(f"Loading IndicTrans2 model '{model_name}' on {DEVICE}...")
         indictrans2_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         indictrans2_model = AutoModelForSeq2SeqLM.from_pretrained(model_name, trust_remote_code=True).to(DEVICE)
         indictrans2_processor = IndicProcessor(build_map_filename=True)
-        print("IndicTrans2 model loaded successfully.")
+        logger.info("IndicTrans2 model loaded successfully.")
     except Exception as e:
-        print(f"CRITICAL ERROR: Could not load IndicTrans2 model: {e}")
-        print("Translation functionality will be unavailable. Ensure 'IndicTransToolkit' is correctly installed from git+https://github.com/AI4Bharat/IndicTransToolkit.git and torch/transformers are compatible.")
+        logger.critical(f"FATAL ERROR: Could not load IndicTrans2 model: {e}", exc_info=True)
+        logger.critical("Translation functionality will be unavailable. Ensure 'IndicTransToolkit' is correctly installed and torch/transformers are compatible.")
         indictrans2_model = None
         indictrans2_tokenizer = None
         indictrans2_processor = None
+        sys.exit(1) # Critical error, exit application
+
 
     # --- Fine-tune Fraud Detection Model ---
-    # Local import of fraud_detection.py
-    from fraud_detection import fine_tune_model, predict_fraud
+    try:
+        logger.info("Attempting to fine-tune fraud detection model...")
+        # Local import of fraud_detection.py
+        from fraud_detection import fine_tune_model, predict_fraud
 
-    # Ensure the output directory for the fine-tuned model exists
-    output_dir = "./distilbert-fraud-finetuned"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        output_dir = "./distilbert-fraud-finetuned"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            logger.info(f"Created output directory for fine-tuned model: {output_dir}")
 
-    if not os.listdir(output_dir): # Check if directory is empty
-        print("Fine-tuning fraud detection model on startup...")
-        # Make sure 'ngo_fraud.csv' is present in the backend folder for fine-tuning
-        fine_tune_model(dataset_path="ngo_fraud.csv", k_folds=1)
-        print("Fraud detection model fine-tuned.")
-    else:
-        print("Fraud detection model already fine-tuned.")
+        # Only fine-tune if the directory is empty (i.e., model not already saved)
+        if not os.listdir(output_dir):
+            logger.info("Fine-tuning fraud detection model on startup (first run)...")
+            # Make sure 'ngo_fraud.csv' is present in the backend folder for fine-tuning
+            # Pass the loaded DataFrame if available, otherwise handle empty case in fine_tune_model
+            fine_tune_model(dataset_path=NGO_FRAUD_DATA_PATH, k_folds=1)
+            logger.info("Fraud detection model fine-tuned and saved.")
+        else:
+            logger.info("Fraud detection model already fine-tuned. Skipping fine-tuning.")
+    except Exception as e:
+        logger.critical(f"FATAL ERROR: Could not fine-tune fraud detection model: {e}", exc_info=True)
+        sys.exit(1) # Critical error, exit application
+
 
     # --- Initial Data Population for Firestore ---
-    if not db:
-        print("Firestore not initialized, skipping initial data population.")
-        return
+    try:
+        logger.info("Checking Firestore for initial data population...")
+        if not db:
+            logger.warning("Firestore not initialized, skipping initial data population.")
+        else:
+            campaigns_ref = db.collection("campaigns")
+            # Check if the collection is empty before populating
+            if not campaigns_ref.limit(1).get():
+                logger.info("Populating initial campaign data in Firestore...")
+                sample_campaigns = [
+                    {"name": "EcoDrone: AI for Reforestation", "description": "Help us build AI-powered drones that plant trees and monitor forest health. Revolutionizing conservation efforts.", "author": "GreenFuture Now", "funded": 25000, "goal": 50000, "days_left": 15, "category": "Technology", "image_url": "https://placehold.co/600x400/A8DADC/333333?text=EcoDrone"},
+                    {"name": "Echoes of Tomorrow - Indie Sci-Fi Film", "description": "Support our ambitious independent science fiction film exploring themes of memory and identity in a dystopian future.", "author": "Nova Pictures", "funded": 75000, "goal": 100000, "days_left": 30, "category": "Arts & Culture", "image_url": "https://placehold.co/600x400/DAB887/333333?text=Sci-Fi+Film"},
+                    {"name": "The Art Hive: Community Art Space", "description": "We are creating a vibrant, accessible art studio and gallery space for everyone in our community.", "author": "Local Artists Collective", "funded": 10000, "goal": 20000, "days_left": 7, "category": "Community", "image_url": "https://placehold.co/600x400/ADD8E6/333333?text=Art+Hive"},
+                    {"name": "Melody Weaver - Debut Album", "description": "Help me record and release my debut folk-pop album, filled with heartfelt stories and enchanting melodies.", "author": "Seraphina Moon", "funded": 3000, "goal": 18000, "days_left": 60, "category": "Music", "image_url": "https://placehold.co/600x400/FFD700/333333?text=Music+Album"},
+                    {"name": "ReThread: Sustainable Fashion Line", "description": "Launching a new line of clothing made entirely from recycled materials and ethical practices.", "author": "EarthWear Designs", "funded": 5000, "goal": 15000, "days_left": 20, "category": "Fashion", "image_url": "https://placehold.co/600x400/98FB98/333333?text=Sustainable+Fashion"},
+                    {"name": "Future Farms: Hydroponic Innovation", "description": "Developing modular hydroponic systems for sustainable urban farming, reducing water usage by 90%.", "author": "AgroTech Solutions", "funded": 40000, "goal": 60000, "days_left": 25, "category": "Technology", "image_url": "https://placehold.co/600x400/B0E0E6/333333?text=Hydroponics"},
+                    {"name": "Historic Landmark Restoration", "description": "Raise funds to restore the dilapidated town hall, preserving its historical integrity for future generations.", "author": "Heritage Keepers", "funded": 15000, "goal": 30000, "days_left": 10, "category": "Community", "image_url": "https://placehold.co/600x400/DDA0DD/333333?text=Restoration"},
+                    {"name": "Interactive STEM Workshops for Kids", "description": "Providing hands-on STEM education to underprivileged children through engaging workshops and resources.", "author": "Bright Minds Initiative", "funded": 8000, "goal": 12000, "days_left": 18, "category": "Education", "image_url": "https://placehold.co/600x400/87CEEB/333333?text=STEM+Kids"},
+                ]
+                batch = db.batch()
+                algolia_initial_objects = []
+                for campaign in sample_campaigns:
+                    org_data_for_fraud_check = {
+                        "org_name": campaign["author"],
+                        "bio": campaign["description"],
+                        "follower_count": random.randint(100, 5000),
+                        "post_count": random.randint(10, 100),
+                        "account_age_days": random.randint(100, 1000),
+                        "engagement_rate": random.uniform(0.01, 0.05),
+                        "recent_posts": campaign["description"],
+                        "pan": "ABCDE1234F" if random.random() > 0.1 else "INVALID",
+                        "registration_type": random.choice(["Section 8 Company", "Society", "Trust", ""]),
+                        "registration_number": "U12345ABCDE67890FGHIJ" if random.random() > 0.1 else "",
+                        "ngo_darpan_id": "UP1234567890" if random.random() > 0.1 else "",
+                        "fcra_number": "1234567890" if random.random() > 0.1 else ""
+                    }
+                    fraud_score, explanation, plot_path, verification_details = predict_fraud(
+                        organization_data=org_data_for_fraud_check
+                    )
 
-    campaigns_ref = db.collection("campaigns")
-    # Check if the collection is empty before populating
-    if not campaigns_ref.limit(1).get():
-        print("Populating initial campaign data in Firestore...")
-        sample_campaigns = [
-            {"name": "EcoDrone: AI for Reforestation", "description": "Help us build AI-powered drones that plant trees and monitor forest health. Revolutionizing conservation efforts.", "author": "GreenFuture Now", "funded": 25000, "goal": 50000, "days_left": 15, "category": "Technology", "image_url": "https://placehold.co/600x400/A8DADC/333333?text=EcoDrone"},
-            {"name": "Echoes of Tomorrow - Indie Sci-Fi Film", "description": "Support our ambitious independent science fiction film exploring themes of memory and identity in a dystopian future.", "author": "Nova Pictures", "funded": 75000, "goal": 100000, "days_left": 30, "category": "Arts & Culture", "image_url": "https://placehold.co/600x400/DAB887/333333?text=Sci-Fi+Film"},
-            {"name": "The Art Hive: Community Art Space", "description": "We are creating a vibrant, accessible art studio and gallery space for everyone in our community.", "author": "Local Artists Collective", "funded": 10000, "goal": 20000, "days_left": 7, "category": "Community", "image_url": "https://placehold.co/600x400/ADD8E6/333333?text=Art+Hive"},
-            {"name": "Melody Weaver - Debut Album", "description": "Help me record and release my debut folk-pop album, filled with heartfelt stories and enchanting melodies.", "author": "Seraphina Moon", "funded": 3000, "goal": 18000, "days_left": 60, "category": "Music", "image_url": "https://placehold.co/600x400/FFD700/333333?text=Music+Album"},
-            {"name": "ReThread: Sustainable Fashion Line", "description": "Launching a new line of clothing made entirely from recycled materials and ethical practices.", "author": "EarthWear Designs", "funded": 5000, "goal": 15000, "days_left": 20, "category": "Fashion", "image_url": "https://placehold.co/600x400/98FB98/333333?text=Sustainable+Fashion"},
-            {"name": "Future Farms: Hydroponic Innovation", "description": "Developing modular hydroponic systems for sustainable urban farming, reducing water usage by 90%.", "author": "AgroTech Solutions", "funded": 40000, "goal": 60000, "days_left": 25, "category": "Technology", "image_url": "https://placehold.co/600x400/B0E0E6/333333?text=Hydroponics"},
-            {"name": "Historic Landmark Restoration", "description": "Raise funds to restore the dilapidated town hall, preserving its historical integrity for future generations.", "author": "Heritage Keepers", "funded": 15000, "goal": 30000, "days_left": 10, "category": "Community", "image_url": "https://placehold.co/600x400/DDA0DD/333333?text=Restoration"},
-            {"name": "Interactive STEM Workshops for Kids", "description": "Providing hands-on STEM education to underprivileged children through engaging workshops and resources.", "author": "Bright Minds Initiative", "funded": 8000, "goal": 12000, "days_left": 18, "category": "Education", "image_url": "https://placehold.co/600x400/87CEEB/333333?text=STEM+Kids"},
-        ]
-        batch = db.batch()
-        algolia_initial_objects = []
-        for campaign in sample_campaigns:
-            org_data_for_fraud_check = {
-                "org_name": campaign["author"],
-                "bio": campaign["description"],
-                "follower_count": random.randint(100, 5000),
-                "post_count": random.randint(10, 100),
-                "account_age_days": random.randint(100, 1000),
-                "engagement_rate": random.uniform(0.01, 0.05),
-                "recent_posts": campaign["description"],
-                "pan": "ABCDE1234F" if random.random() > 0.1 else "INVALID",
-                "registration_type": random.choice(["Section 8 Company", "Society", "Trust", ""]),
-                "registration_number": "U12345ABCDE67890FGHIJ" if random.random() > 0.1 else "",
-                "ngo_darpan_id": "UP1234567890" if random.random() > 0.1 else "",
-                "fcra_number": "1234567890" if random.random() > 0.1 else ""
-            }
-            fraud_score, explanation, plot_path, verification_details = predict_fraud(
-                organization_data=org_data_for_fraud_check
-            )
+                    verification_status = ""
+                    if fraud_score <= 0.20:
+                        verification_status = "Verified by AI"
+                    elif 0.21 <= fraud_score <= 0.50:
+                        verification_status = "Needs Manual Review"
+                    else:
+                        verification_status = "Rejected"
 
-            verification_status = ""
-            if fraud_score <= 0.20:
-                verification_status = "Verified by AI"
-            elif 0.21 <= fraud_score <= 0.50:
-                verification_status = "Needs Manual Review"
+                    if verification_status != "Rejected":
+                        campaign_with_defaults = {
+                            **campaign,
+                            "created_by_uid": "system_init",
+                            "created_at": firestore.SERVER_TIMESTAMP,
+                            "fraud_score": fraud_score,
+                            "fraud_explanation": explanation,
+                            "verification_details": verification_details,
+                            "verification_status": verification_status
+                        }
+                        new_doc_ref = campaigns_ref.document()
+                        batch.set(new_doc_ref, campaign_with_defaults)
+                        algolia_initial_objects.append({**campaign_with_defaults, "objectID": new_doc_ref.id})
+                    else:
+                        logger.info(f"Campaign '{campaign['name']}' initially rejected due to high fraud risk (score: {fraud_score:.2f}). Skipping population.")
+
+                batch.commit()
+                logger.info("Initial campaign data populated in Firestore.")
+
+                if algolia_index and algolia_initial_objects:
+                    try:
+                        algolia_index.save_objects(algolia_initial_objects).wait()
+                        logger.info(f"Initial {len(algolia_initial_objects)} campaigns indexed in Algolia.")
+                    except Exception as e:
+                        logger.error(f"Error indexing initial campaigns in Algolia: {e}", exc_info=True)
             else:
-                verification_status = "Rejected"
+                logger.info("Firestore 'campaigns' collection already has data. Skipping initial population.")
+    except Exception as e:
+        logger.critical(f"FATAL ERROR: Initial data population in Firestore failed: {e}", exc_info=True)
+        sys.exit(1) # Critical error, exit application
 
-            if verification_status != "Rejected":
-                campaign_with_defaults = {
-                    **campaign,
-                    "created_by_uid": "system_init",
-                    "created_at": firestore.SERVER_TIMESTAMP,
-                    "fraud_score": fraud_score,
-                    "fraud_explanation": explanation,
-                    "verification_details": verification_details,
-                    "verification_status": verification_status
-                }
-                new_doc_ref = campaigns_ref.document()
-                batch.set(new_doc_ref, campaign_with_defaults)
-                algolia_initial_objects.append({**campaign_with_defaults, "objectID": new_doc_ref.id})
-            else:
-                print(f"Campaign '{campaign['name']}' initially rejected due to high fraud risk (score: {fraud_score:.2f}). Skipping population.")
-
-        batch.commit()
-        print("Initial campaign data populated in Firestore.")
-
-        if algolia_index and algolia_initial_objects:
-            try:
-                algolia_index.save_objects(algolia_initial_objects).wait()
-                print(f"Initial {len(algolia_initial_objects)} campaigns indexed in Algolia.")
-            except Exception as e:
-                print(f"Error indexing initial campaigns in Algolia: {e}")
-    else:
-        print("Firestore 'campaigns' collection already has data. Skipping initial population.")
+    logger.info("Application startup event completed successfully. Ready to serve.")
 
 
 if __name__ == "__main__":
@@ -929,4 +1015,3 @@ if __name__ == "__main__":
     # For local testing, if you don't have a GPU, set DEVICE = "cpu" at the top.
     # Also, ensure IndicTrans2 model files are available locally or downloaded.
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
