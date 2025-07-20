@@ -10,23 +10,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Dockerfile for FastAPI Backend
-
-# Use a specific Python runtime as a parent image
-FROM python:3.10-slim-bullseye
-
-# Set the working directory in the container
-WORKDIR /app
-
-# Install system dependencies needed for some Python packages
-# 'build-essential' for compilers, 'git' for git-based dependencies, 'curl' for healthchecks
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the requirements file first to leverage Docker cache
 COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
@@ -55,4 +38,4 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
 # Command to run the FastAPI application using Gunicorn with Uvicorn workers.
 # It listens on all network interfaces (0.0.0.0) on the exposed port 8000.
 # Render will map its external $PORT to this internal port 8000.
-CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "app:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
