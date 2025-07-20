@@ -22,14 +22,8 @@ import urllib.parse
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, messaging
 
-# Algolia Search Client - with error handling
-try:
-    from algoliasearch.search_client import SearchClient
-    ALGOLIA_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Algolia not available: {e}")
-    SearchClient = None
-    ALGOLIA_AVAILABLE = False
+# Algolia Search Client
+from algoliasearch.search_client import SearchClient
 
 # Suppress warnings for cleaner output
 import warnings
@@ -167,6 +161,105 @@ class EnvironmentConfig:
 # Initialize environment configuration
 env_config = EnvironmentConfig()
 
+# --- Pydantic Models (MOVED TO EARLY SECTION TO FIX NameError) ---
+class UserLogin(BaseModel):
+    id_token: str
+
+
+class UserInfo(BaseModel):
+    uid: str
+    email: Optional[str] = None
+    role: str = "user"
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class SearchQuery(BaseModel):
+    query: str
+
+
+class NotificationRequest(BaseModel):
+    campaign_id: str
+    message: str
+    recipient_email: Optional[str] = None
+    device_token: Optional[str] = None
+
+
+class FraudCheckRequest(BaseModel):
+    org_name: str
+    bio: Optional[str]
+    follower_count: int
+    post_count: int
+    account_age_days: int
+    engagement_rate: float
+    recent_posts: Optional[str]
+    pan: Optional[str] = None
+    reg_number: Optional[str] = None
+    registration_type: Optional[str] = None
+    ngo_darpan_id: Optional[str] = None
+    fcra_number: Optional[str] = None
+
+
+# FraudCheckResponse model (keeping XAI fields)
+class FraudCheckResponse(BaseModel):
+    fraud_score: float
+    explanation: Optional[str] = None
+    shap_plot: Optional[str] = None  # Path to the SHAP plot image
+    verification: Optional[Dict[str, Any]] = None
+    verification_status: str
+
+
+class CampaignCreateRequest(BaseModel):
+    name: str
+    description: str
+    author: str
+    goal: int
+    category: str
+    registration_type: Optional[str] = None
+    registration_number: Optional[str] = None
+    pan: Optional[str] = None
+    ngo_darpan_id: Optional[str] = None
+    fcra_number: Optional[str] = None
+
+
+class Campaign(BaseModel):
+    id: str
+    name: str
+    description: str
+    author: str
+    funded: int
+    goal: int
+    days_left: int
+    category: str
+    verification_status: str = "Pending"
+    fraud_score: Optional[float] = None
+    fraud_explanation: Optional[str] = None  # Keeping XAI field
+    verification_details: Optional[Dict[str, Any]] = None
+    image_url: Optional[str] = None
+
+
+class InitiatePaymentRequest(BaseModel):
+    campaign_id: str
+    amount: int
+    payment_method: str  # e.g., 'instamojo_gateway', 'upi'
+    donor_name: Optional[str] = "Anonymous"
+    donor_email: Optional[str] = "anonymous@example.com"
+    donor_phone: Optional[str] = "9999999999"
+
+
+class CampaignBulkUploadRequest(BaseModel):
+    campaigns: List[CampaignCreateRequest]
+
+
+class TranslationRequest(BaseModel):
+    campaign_id: str
+    field: str  # e.g., "name", "description"
+    target_language: str  # e.g., "hi", "bn", "ta"
+
+
 # --- Initialize FastAPI app ---
 app = FastAPI(
     title="HAVEN Backend Service (Enhanced Cloud Ready)",
@@ -204,12 +297,12 @@ async def health_check():
 
         # Check Algolia connection
         try:
-            if algolia_index and ALGOLIA_AVAILABLE:
+            if algolia_index:
                 # Simple Algolia connectivity test
                 algolia_index.search("", {"hitsPerPage": 1})
                 health_status["services"]["algolia"] = "connected"
             else:
-                health_status["services"]["algolia"] = "not_configured" if not ALGOLIA_AVAILABLE else "not_initialized"
+                health_status["services"]["algolia"] = "not_configured"
         except Exception as e:
             health_status["services"]["algolia"] = f"error: {str(e)}"
             logger.warning(f"Algolia health check failed: {e}")
@@ -410,105 +503,6 @@ def indictrans2_translate(text: str, source_lang: str, target_lang: str) -> str:
         return f"{text} (Translation Failed: {e})"
 
 
-# --- Pydantic Models ---
-class UserLogin(BaseModel):
-    id_token: str
-
-
-class UserInfo(BaseModel):
-    uid: str
-    email: Optional[str] = None
-    role: str = "user"
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
-class SearchQuery(BaseModel):
-    query: str
-
-
-class NotificationRequest(BaseModel):
-    campaign_id: str
-    message: str
-    recipient_email: Optional[str] = None
-    device_token: Optional[str] = None
-
-
-class FraudCheckRequest(BaseModel):
-    org_name: str
-    bio: Optional[str]
-    follower_count: int
-    post_count: int
-    account_age_days: int
-    engagement_rate: float
-    recent_posts: Optional[str]
-    pan: Optional[str] = None
-    reg_number: Optional[str] = None
-    registration_type: Optional[str] = None
-    ngo_darpan_id: Optional[str] = None
-    fcra_number: Optional[str] = None
-
-
-# FraudCheckResponse model (keeping XAI fields)
-class FraudCheckResponse(BaseModel):
-    fraud_score: float
-    explanation: Optional[str] = None
-    shap_plot: Optional[str] = None  # Path to the SHAP plot image
-    verification: Optional[Dict[str, Any]] = None
-    verification_status: str
-
-
-class CampaignCreateRequest(BaseModel):
-    name: str
-    description: str
-    author: str
-    goal: int
-    category: str
-    registration_type: Optional[str] = None
-    registration_number: Optional[str] = None
-    pan: Optional[str] = None
-    ngo_darpan_id: Optional[str] = None
-    fcra_number: Optional[str] = None
-
-
-class Campaign(BaseModel):
-    id: str
-    name: str
-    description: str
-    author: str
-    funded: int
-    goal: int
-    days_left: int
-    category: str
-    verification_status: str = "Pending"
-    fraud_score: Optional[float] = None
-    fraud_explanation: Optional[str] = None  # Keeping XAI field
-    verification_details: Optional[Dict[str, Any]] = None
-    image_url: Optional[str] = None
-
-
-class InitiatePaymentRequest(BaseModel):
-    campaign_id: str
-    amount: int
-    payment_method: str  # e.g., 'instamojo_gateway', 'upi'
-    donor_name: Optional[str] = "Anonymous"
-    donor_email: Optional[str] = "anonymous@example.com"
-    donor_phone: Optional[str] = "9999999999"
-
-
-class CampaignBulkUploadRequest(BaseModel):
-    campaigns: List[CampaignCreateRequest]
-
-
-class TranslationRequest(BaseModel):
-    campaign_id: str
-    field: str  # e.g., "name", "description"
-    target_language: str  # e.g., "hi", "bn", "ta"
-
-
 # --- API Endpoints ---
 
 @app.get("/", response_class=HTMLResponse)
@@ -624,15 +618,13 @@ async def startup_event():
         algolia_app_id = env_config.get("ALGOLIA_APP_ID")
         algolia_api_key = env_config.get("ALGOLIA_API_KEY")
 
-        if algolia_app_id and algolia_api_key and ALGOLIA_AVAILABLE:
+        if algolia_app_id and algolia_api_key:
             algolia_client = SearchClient(algolia_app_id, algolia_api_key)
             algolia_index = algolia_client.init_index("campaigns")
             logger.info("Algolia client initialized for index: campaigns")
         else:
-            if not ALGOLIA_AVAILABLE:
-                logger.warning("Algolia package not available. Search functionality will be limited to Firestore fallback.")
-            else:
-                logger.warning("Algolia API keys not configured. Search functionality will be limited to Firestore fallback.")
+            logger.warning(
+                "Algolia API keys not configured. Search functionality will be limited to Firestore fallback.")
             algolia_client = None
             algolia_index = None
 
