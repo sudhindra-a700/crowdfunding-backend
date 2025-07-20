@@ -25,6 +25,4 @@ datasets==2.20.0
 sentencepiece
 shap==0.45.0
 
-# Local IndicTransToolkit installation
--e ./IndicTransToolkit-main
 
