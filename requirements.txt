@@ -13,4 +13,8 @@ pandas==1.5.3
 Cython==0.29.36
 matplotlib==3.9.0
 scikit-learn==1.5.0
-sentencepiece 
+sentencepiece
+# Assuming IndicTransToolkit is a local folder in the same directory as requirements.txt
+# This performs an editable install of the local package.
+-e ./IndicTransToolkit-main
+
