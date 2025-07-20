@@ -1,16 +1,30 @@
-    fastapi==0.111.0
-    uvicorn[standard]==0.30.1
-    pydantic==2.7.4
-    requests==2.32.3
-    firebase-admin==6.5.0
-    algoliasearch
-    transformers==4.42.3
-    torch
-    datasets==2.20.0
-    shap==0.45.0
-    numpy==1.23.5
-    pandas==1.5.3
-    Cython==0.29.36
-    matplotlib==3.9.0
-    scikit-learn==1.5.0
-    sentencepiece
+ # Core FastAPI and general dependencies
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+requests==2.32.3
+firebase-admin==6.5.0
+algoliasearch
+
+# Scientific/ML dependencies - order matters for some conflicts
+# Pin numpy to a version compatible with numba's constraint (<2.1)
+numpy==1.23.5
+# Pin numba to a version known to work with numpy 1.23.x
+# Numba 0.56.x is generally compatible with numpy 1.2x.
+numba==0.56.4
+scikit-learn==1.5.0
+pandas==1.5.3
+Cython==0.29.36
+matplotlib==3.9.0
+
+# Transformers and PyTorch
+# Ensure torch is explicitly pinned to avoid unexpected numpy updates
+torch==2.3.1 # Or the specific torch version you were using that worked
+transformers==4.42.3
+datasets==2.20.0
+sentencepiece
+shap==0.45.0
+
+# Local IndicTransToolkit installation
+-e ./IndicTransToolkit-main
+
