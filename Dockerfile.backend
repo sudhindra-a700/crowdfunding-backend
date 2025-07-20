@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for FastAPI Backend
+# Multi-stage Dockerfile for FastAPI Backend with IndicTransToolkit
 # Stage 1: Build stage with all build dependencies
 FROM python:3.10-slim-bullseye AS builder
 
@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     pkg-config \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file first to leverage Docker cache
@@ -23,8 +25,21 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
+# Install Cython first (required for IndicTransToolkit)
+RUN pip install --no-cache-dir cython
+
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy IndicTransToolkit and install it
+COPY IndicTransToolkit-main/ ./IndicTransToolkit-main/
+WORKDIR /app/IndicTransToolkit-main
+
+# Install IndicTransToolkit from source
+RUN pip install --no-cache-dir .
+
+# Return to app directory
+WORKDIR /app
 
 # Stage 2: Runtime stage with minimal dependencies
 FROM python:3.10-slim-bullseye AS runtime
@@ -45,8 +60,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Copy the application code
-COPY --chown=appuser:appuser . .
+# Copy the application code (excluding IndicTransToolkit-main as it's already installed)
+COPY --chown=appuser:appuser app.py .
+COPY --chown=appuser:appuser fraud_detection.py .
 
 # Create necessary directories with proper permissions
 RUN mkdir -p /app/static/icons /app/static/shap_plots \
