@@ -1,41 +1,68 @@
-FROM python:3.10-bullseye
+# Multi-stage Dockerfile for FastAPI Backend
+# Stage 1: Build stage with all build dependencies
+FROM python:3.10-slim-bullseye AS builder
+
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies needed for some Python packages
-# 'build-essential' for compilers, 'git' for git-based dependencies, 'curl' for healthchecks
+# Install system dependencies needed for building Python packages
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
     curl \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy the requirements file first to leverage Docker cache
 COPY requirements.txt .
 
+# Create a virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 # Upgrade pip and install Python dependencies
-# --no-cache-dir is good for production builds to keep image size down
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code (including IndicTransToolkit-main, DEhli.csv, ngo_fraud.csv, etc.)
-COPY . .
+# Stage 2: Runtime stage with minimal dependencies
+FROM python:3.10-slim-bullseye AS runtime
 
-# Explicitly install the local IndicTransToolkit-main package
-# This assumes IndicTransToolkit-main is a valid Python package (has setup.py or pyproject.toml)
-# and is located directly within the 'backend' directory (which becomes /app in the container).
-RUN pip install --no-cache-dir ./IndicTransToolkit-main
+# Set the working directory in the container
+WORKDIR /app
+
+# Install only runtime system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy the virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Copy the application code
+COPY --chown=appuser:appuser . .
+
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/static/icons /app/static/shap_plots \
+    && chown -R appuser:appuser /app/static
+
+# Switch to non-root user
+USER appuser
 
 # Expose the port that Gunicorn will run on internally
 EXPOSE 8000
 
-# Add a HEALTHCHECK to help Render monitor the container.
-# It checks if the /health endpoint responds successfully.
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+# Add a HEALTHCHECK to help cloud platforms monitor the container
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
   CMD curl --fail http://localhost:8000/health || exit 1
 
-# Command to run the FastAPI application using Gunicorn with Uvicorn workers.
-# It listens on all network interfaces (0.0.0.0) on the exposed port 8000.
-# Render will map its external $PORT to this internal port 8000.
-CMD ["gunicorn", "app:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+# Command to run the FastAPI application using Gunicorn with Uvicorn workers
+# It listens on all network interfaces (0.0.0.0) on the exposed port 8000
+CMD ["gunicorn", "app:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100"]
+
