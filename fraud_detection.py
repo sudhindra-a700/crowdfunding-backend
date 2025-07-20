@@ -12,6 +12,8 @@ from datetime import datetime
 import warnings
 import matplotlib.pyplot as plt  # Keep matplotlib for SHAP plots
 import random  # For random numbers in mock data
+from sklearn.model_selection import KFold  # Added missing import
+from typing import Optional  # Added missing import
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore")
@@ -381,3 +383,4 @@ if __name__ == "__main__":
     print(f"Explanation: {explanation}")
     print(f"SHAP Plot Path: {plot_path}")
     print(f"Verification: {json.dumps(verification, indent=2)}")
+

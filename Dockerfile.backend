@@ -28,7 +28,13 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # Install Cython first (required for IndicTransToolkit)
 RUN pip install --no-cache-dir cython
 
-# Install any needed packages specified in requirements.txt
+# Install core dependencies first to catch any issues early
+RUN pip install --no-cache-dir fastapi==0.111.0 uvicorn==0.30.1 gunicorn==22.0.0
+
+# Install algoliasearch explicitly with version
+RUN pip install --no-cache-dir algoliasearch==3.0.0
+
+# Install remaining packages from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy IndicTransToolkit and install it
@@ -40,6 +46,10 @@ RUN pip install --no-cache-dir .
 
 # Return to app directory
 WORKDIR /app
+
+# Verify critical imports work
+RUN python -c "from algoliasearch.search_client import SearchClient; print('Algoliasearch import successful')"
+RUN python -c "from IndicTransToolkit.processor import IndicProcessor; print('IndicTransToolkit import successful')"
 
 # Stage 2: Runtime stage with minimal dependencies
 FROM python:3.10-slim-bullseye AS runtime
@@ -81,4 +91,3 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
 # Command to run the FastAPI application using Gunicorn with Uvicorn workers
 # It listens on all network interfaces (0.0.0.0) on the exposed port 8000
 CMD ["gunicorn", "app:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100"]
-

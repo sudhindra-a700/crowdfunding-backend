@@ -1,6 +1,3 @@
-
-
-
 .git
 .gitignore
 .vscode
@@ -22,5 +19,5 @@ venv
 /todo.md
 /app_enhanced.py
 /Dockerfile.backend.fixed
-
+/.dockerignore.fixed
 

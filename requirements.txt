@@ -1,8 +1,8 @@
-    # Core FastAPI and general dependencies
+# Core FastAPI and general dependencies
 fastapi==0.111.0
 requests==2.32.3
 firebase-admin==6.5.0
-algoliasearch
+algoliasearch==3.0.0
 
 # Explicitly list gunicorn and uvicorn
 gunicorn==22.0.0 # Pin a recent, stable version of gunicorn
@@ -26,3 +26,4 @@ shap==0.45.0
 
 # Enhanced monitoring and system metrics
 psutil>=5.9.0
+
