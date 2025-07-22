@@ -13,6 +13,7 @@ import sys
 import logging
 import time
 import psutil
+import base64
 
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
@@ -30,6 +31,7 @@ try:
 except ImportError:
     ALGOLIA_AVAILABLE = False
     SearchClient = None
+
 
 # --- Enhanced Logging Configuration ---
 def setup_logging():
@@ -232,8 +234,8 @@ class CampaignBulkUploadRequest(BaseModel):
 
 
 class TranslationRequest(BaseModel):
-    campaign_id: str
-    field: str
+    text: str
+    source_language: str
     target_language: str
 
 
@@ -412,11 +414,51 @@ def load_indictrans2_model():
 
 
 def indictrans2_translate(text: str, source_lang: str, target_lang: str) -> str:
-    logger.warning("Using placeholder translation/simplification as IndicTrans2 is not fully loaded.")
-    # Placeholder for actual translation/simplification logic
-    # In a real scenario, you would use a translation model or simplification library here.
-    # For now, we'll just append a marker to show it's been processed.
-    return f"[Simplified: {text}]"
+    """Placeholder for actual translation logic for Indic languages."""
+    translations_map = {
+        "en": {
+            "hi": "नमस्ते",
+            "ta": "வணக்கம்",
+            "te": "నమస్కారం"
+        },
+        "hi": {
+            "en": "Hello",
+            "ta": "வணக்கம்",
+            "te": "నమస్కారం"
+        },
+        "ta": {
+            "en": "Hello",
+            "hi": "नमस्ते",
+            "te": "నమస్కారం"
+        },
+        "te": {
+            "en": "Hello",
+            "hi": "नमस्ते",
+            "ta": "வணக்கம்"
+        }
+    }
+
+    if source_lang == target_lang:
+        return text
+
+    if source_lang in translations_map and target_lang in translations_map[source_lang]:
+        # This is a very basic placeholder. In a real scenario, you'd use a robust translation model.
+        return f"{translations_map[source_lang][target_lang]} (Translated from {source_lang} to {target_lang})"
+    else:
+        logger.warning(f"Unsupported translation pair: {source_lang} to {target_lang}. Returning original text.")
+        return text
+
+
+@app.post("/translate-text")
+async def translate_text_endpoint(request: TranslationRequest):
+    """Endpoint to translate text using a placeholder translation."""
+    try:
+        translated_text = indictrans2_translate(request.text, source_lang=request.source_language,
+                                                target_lang=request.target_language)
+        return {"translated_text": translated_text}
+    except Exception as e:
+        logger.error(f"Error in /translate-text endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during translation.")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -480,6 +522,121 @@ async def simplify_text_endpoint(request: SimplifyTextRequest):
         raise HTTPException(status_code=500, detail="Internal server error during simplification.")
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    organization_name: Optional[str] = None
+    organization_phone: Optional[str] = None
+    organization_type: Optional[str] = None
+    brief_description: Optional[str] = None
+    type: str  # "individual" or "organization"
+
+
+@app.post("/login")
+async def login_user(request: LoginRequest):
+    """Login endpoint for email/password authentication."""
+    try:
+        # For now, we'll create a simple mock authentication
+        # In a real implementation, you would verify credentials against Firebase Auth
+        if not request.email or not request.password:
+            raise HTTPException(status_code=400, detail="Email and password are required")
+
+        # Mock successful login - in production, verify against Firebase Auth
+        mock_token = f"mock_token_{request.email}_{int(time.time())}"
+
+        return {
+            "access_token": mock_token,
+            "token_type": "bearer",
+            "role": "user",
+            "email": request.email
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /login endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during login.")
+
+
+@app.post("/register")
+async def register_user(request: RegisterRequest):
+    """Register endpoint for new user registration."""
+    try:
+        if not request.email or not request.type:
+            raise HTTPException(status_code=400, detail="Email and type are required")
+
+        # Mock successful registration - in production, create user in Firebase Auth
+        logger.info(f"Registering new user: {request.email} as {request.type}")
+
+        return {
+            "message": "Registration successful",
+            "email": request.email,
+            "type": request.type,
+            "status": "success"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /register endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during registration.")
+
+
+@app.get("/campaigns")
+async def get_campaigns():
+    """Get all campaigns."""
+    try:
+        # Mock campaigns data
+        mock_campaigns = [
+            {
+                "id": "1",
+                "name": "Sustainable Farming Initiative",
+                "description": "Support local farmers in adopting sustainable practices.",
+                "author": "Green Earth Foundation",
+                "funded": 75000,
+                "goal": 100000,
+                "days_left": 30,
+                "category": "Environment",
+                "verification_status": "Verified",
+                "image_url": "https://via.placeholder.com/600x400"
+            },
+            {
+                "id": "2",
+                "name": "Clean Water Project",
+                "description": "Provide access to clean and safe drinking water.",
+                "author": "Water for All",
+                "funded": 50000,
+                "goal": 80000,
+                "days_left": 45,
+                "category": "Health",
+                "verification_status": "Verified",
+                "image_url": "https://via.placeholder.com/600x400"
+            },
+            {
+                "id": "3",
+                "name": "Education for All",
+                "description": "Fund educational resources for underprivileged children.",
+                "author": "Education First",
+                "funded": 30000,
+                "goal": 60000,
+                "days_left": 60,
+                "category": "Education",
+                "verification_status": "Verified",
+                "image_url": "https://via.placeholder.com/600x400"
+            }
+        ]
+
+        return mock_campaigns
+    except Exception as e:
+        logger.error(f"Error in /campaigns endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error fetching campaigns.")
+
+
 # --- Ultra Robust Firebase Initialization ---
 def initialize_firebase():
     """Ultra robust Firebase initialization with multiple fallback strategies"""
@@ -529,8 +686,6 @@ def initialize_firebase():
     firebase_key = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
     if firebase_key:
         try:
-            import base64
-
             # Clean the base64 string
             firebase_key = firebase_key.strip()
 
@@ -656,5 +811,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
