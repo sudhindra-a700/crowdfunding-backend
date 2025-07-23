@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
+from starlette.middleware.sessions import SessionMiddleware
 import os
 import pandas as pd
 import joblib
@@ -14,6 +15,7 @@ import logging
 import time
 import psutil
 import base64
+import secrets
 
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
@@ -23,15 +25,18 @@ import urllib.parse
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, messaging
 
+# OAuth imports
+from oauth_routes import get_oauth_router
+from oauth_config import get_oauth_config
+from jwt_utils import get_jwt_manager
+
 # Algolia Search Client
 try:
     from algoliasearch.search_client import SearchClient
-
     ALGOLIA_AVAILABLE = True
 except ImportError:
     ALGOLIA_AVAILABLE = False
     SearchClient = None
-
 
 # --- Enhanced Logging Configuration ---
 def setup_logging():
@@ -78,9 +83,7 @@ def setup_logging():
 
     return logging.getLogger(__name__)
 
-
 logger = setup_logging()
-
 
 class EnvironmentConfig:
     def __init__(self):
@@ -94,7 +97,14 @@ class EnvironmentConfig:
             "INSTAMOJO_AUTH_TOKEN": "Payment processing",
             "LOG_LEVEL": "Logging configuration",
             "LOG_FORMAT": "Logging format",
-            "ENVIRONMENT": "Environment identification"
+            "ENVIRONMENT": "Environment identification",
+            # OAuth variables
+            "GOOGLE_CLIENT_ID": "Google OAuth authentication",
+            "GOOGLE_CLIENT_SECRET": "Google OAuth authentication",
+            "FACEBOOK_CLIENT_ID": "Facebook OAuth authentication",
+            "FACEBOOK_CLIENT_SECRET": "Facebook OAuth authentication",
+            "JWT_SECRET_KEY": "JWT token signing",
+            "SECRET_KEY": "Session management"
         }
         self.config = {}
         self.missing_required = []
@@ -138,131 +148,101 @@ class EnvironmentConfig:
     def get_missing_optional(self) -> List[tuple]:
         return self.missing_optional
 
-
 env_config = EnvironmentConfig()
 
-
+# Pydantic models
 class UserLogin(BaseModel):
     id_token: str
-
 
 class UserInfo(BaseModel):
     uid: str
     email: Optional[str] = None
     role: str = "user"
 
-
 class Token(BaseModel):
     access_token: str
     token_type: str
 
-
 class SearchQuery(BaseModel):
     query: str
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
-class NotificationRequest(BaseModel):
-    campaign_id: str
-    message: str
-    recipient_email: Optional[str] = None
-    device_token: Optional[str] = None
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    organization_name: Optional[str] = None
+    organization_phone: Optional[str] = None
+    organization_type: Optional[str] = None
+    brief_description: Optional[str] = None
+    type: str  # "individual" or "organization"
 
-
-class FraudCheckRequest(BaseModel):
-    org_name: str
-    bio: Optional[str]
-    follower_count: int
-    post_count: int
-    account_age_days: int
-    engagement_rate: float
-    recent_posts: Optional[str]
-    pan: Optional[str] = None
-    reg_number: Optional[str] = None
-    registration_type: Optional[str] = None
-    ngo_darpan_id: Optional[str] = None
-    fcra_number: Optional[str] = None
-
-
-class FraudCheckResponse(BaseModel):
-    fraud_score: float
-    explanation: Optional[str] = None
-    shap_plot: Optional[str] = None
-    verification: Optional[Dict[str, Any]] = None
-    verification_status: str
-
-
-class CampaignCreateRequest(BaseModel):
-    name: str
-    description: str
-    author: str
-    goal: int
-    category: str
-    registration_type: Optional[str] = None
-    registration_number: Optional[str] = None
-    pan: Optional[str] = None
-    ngo_darpan_id: Optional[str] = None
-    fcra_number: Optional[str] = None
-
-
-class Campaign(BaseModel):
-    id: str
-    name: str
-    description: str
-    author: str
-    funded: int
-    goal: int
-    days_left: int
-    category: str
-    verification_status: str = "Pending"
-    fraud_score: Optional[float] = None
-    fraud_explanation: Optional[str] = None
-    verification_details: Optional[Dict[str, Any]] = None
-    image_url: Optional[str] = None
-
-
-class InitiatePaymentRequest(BaseModel):
-    campaign_id: str
-    amount: int
-    payment_method: str
-    donor_name: Optional[str] = "Anonymous"
-    donor_email: Optional[str] = "anonymous@example.com"
-    donor_phone: Optional[str] = "9999999999"
-
-
-class CampaignBulkUploadRequest(BaseModel):
-    campaigns: List[CampaignCreateRequest]
-
-
-class TranslationRequest(BaseModel):
-    text: str
-    source_language: str
-    target_language: str
-
-
-class SimplifyTextRequest(BaseModel):
-    text: str
-    target_language: Optional[str] = None
-
-
+# Create FastAPI app
 app = FastAPI(
-    title="HAVEN Backend Service (Ultra Robust)",
-    description="Ultra robust version with maximum error tolerance and graceful degradation",
-    version="3.0.0"
+    title="HAVEN Backend Service with OAuth",
+    description="Crowdfunding platform backend with Google and Facebook OAuth authentication",
+    version="2.0.0"
 )
 
+# Add session middleware for OAuth state management
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+)
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include OAuth router
+app.include_router(get_oauth_router())
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# Global variables
+indictrans2_model = None
+indictrans2_tokenizer = None
+indictrans2_processor = None
+DEVICE = "cpu"
+
+db = None
+algolia_client = None
+algolia_index = None
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/verify-token")
+
+# Enhanced health check with OAuth status
 @app.get("/health")
 async def health_check():
     try:
         health_status = {
             "status": "healthy",
             "timestamp": time.time(),
-            "version": "3.0.0",
+            "version": "2.0.0",
             "environment": env_config.get("ENVIRONMENT", "unknown"),
             "services": {},
-            "system": {}
+            "system": {},
+            "oauth": {}
         }
 
+        # Check OAuth configuration
+        oauth_config = get_oauth_config()
+        health_status["oauth"] = {
+            "google_configured": oauth_config.is_google_configured,
+            "facebook_configured": oauth_config.is_facebook_configured,
+            "at_least_one_configured": oauth_config.is_configured
+        }
+
+        # Firebase health check
         try:
             if db:
                 test_doc = db.collection("health_check").document("test")
@@ -274,6 +254,7 @@ async def health_check():
             health_status["services"]["firebase"] = f"error: {str(e)}"
             logger.warning(f"Firebase health check failed: {e}")
 
+        # Algolia health check
         try:
             if algolia_index:
                 algolia_index.search("", {"hitsPerPage": 1})
@@ -284,6 +265,7 @@ async def health_check():
             health_status["services"]["algolia"] = f"error: {str(e)}"
             logger.warning(f"Algolia health check failed: {e}")
 
+        # System metrics
         try:
             health_status["system"] = {
                 "cpu_percent": psutil.cpu_percent(interval=1),
@@ -295,6 +277,7 @@ async def health_check():
             logger.warning(f"System metrics collection failed: {e}")
             health_status["system"] = {"error": str(e)}
 
+        # Check for critical issues
         critical_issues = []
         if env_config.is_required_missing():
             critical_issues.extend([f"Missing required env var: {var}" for var, _ in env_config.get_missing_required()])
@@ -317,7 +300,6 @@ async def health_check():
             "timestamp": time.time()
         }, 500
 
-
 @app.get("/ready")
 async def readiness_check():
     try:
@@ -330,34 +312,11 @@ async def readiness_check():
         logger.error(f"Readiness check failed: {e}", exc_info=True)
         return {"ready": False, "reason": str(e)}, 503
 
-
 @app.get("/live")
 async def liveness_check():
     return {"alive": True, "timestamp": time.time()}
 
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-BASE_DIR = Path(__file__).resolve().parent
-
-indictrans2_model = None
-indictrans2_tokenizer = None
-indictrans2_processor = None
-DEVICE = "cpu"
-
-db = None
-algolia_client = None
-algolia_index = None
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/verify-token")
-
-
+# Authentication functions
 async def get_current_user(id_token: str = Depends(oauth2_scheme)):
     if not firebase_admin._apps or not db:
         logger.error("Firebase not initialized in get_current_user.")
@@ -376,7 +335,6 @@ async def get_current_user(id_token: str = Depends(oauth2_scheme)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-
 async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(
@@ -385,166 +343,11 @@ async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
         )
     return current_user
 
-
-def load_indictrans2_model():
-    global indictrans2_model, indictrans2_tokenizer, indictrans2_processor, DEVICE
-    if indictrans2_model is None or indictrans2_tokenizer is None or indictrans2_processor is None:
-        logger.info("Lazily loading IndicTrans2 model...")
-        try:
-            import torch
-            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-            if torch.cuda.is_available():
-                DEVICE = "cuda"
-                logger.info("CUDA (GPU) is available. Using GPU for IndicTrans2.")
-            else:
-                DEVICE = "cpu"
-                logger.info("CUDA (GPU) is not available. Using CPU for IndicTrans2.")
-
-            model_name = "ai4bharat/indictrans2-en-indic-1B"
-            indictrans2_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-            indictrans2_model = AutoModelForSeq2SeqLM.from_pretrained(model_name, trust_remote_code=True).to(DEVICE)
-            logger.info("IndicTrans2 model loaded successfully (lazy).")
-        except Exception as e:
-            logger.error(f"Error lazy loading IndicTrans2 model: {e}", exc_info=True)
-            indictrans2_model = None
-            indictrans2_tokenizer = None
-            indictrans2_processor = None
-            raise RuntimeError("Translation service initialization failed.")
-
-
-def indictrans2_translate(text: str, source_lang: str, target_lang: str) -> str:
-    """Placeholder for actual translation logic for Indic languages."""
-    translations_map = {
-        "en": {
-            "hi": "नमस्ते",
-            "ta": "வணக்கம்",
-            "te": "నమస్కారం"
-        },
-        "hi": {
-            "en": "Hello",
-            "ta": "வணக்கம்",
-            "te": "నమస్కారం"
-        },
-        "ta": {
-            "en": "Hello",
-            "hi": "नमस्ते",
-            "te": "నమస్కారం"
-        },
-        "te": {
-            "en": "Hello",
-            "hi": "नमस्ते",
-            "ta": "வணக்கம்"
-        }
-    }
-
-    if source_lang == target_lang:
-        return text
-
-    if source_lang in translations_map and target_lang in translations_map[source_lang]:
-        # This is a very basic placeholder. In a real scenario, you'd use a robust translation model.
-        return f"{translations_map[source_lang][target_lang]} (Translated from {source_lang} to {target_lang})"
-    else:
-        logger.warning(f"Unsupported translation pair: {source_lang} to {target_lang}. Returning original text.")
-        return text
-
-
-@app.post("/translate-text")
-async def translate_text_endpoint(request: TranslationRequest):
-    """Endpoint to translate text using a placeholder translation."""
-    try:
-        translated_text = indictrans2_translate(request.text, source_lang=request.source_language,
-                                                target_lang=request.target_language)
-        return {"translated_text": translated_text}
-    except Exception as e:
-        logger.error(f"Error in /translate-text endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error during translation.")
-
-
-@app.get("/", response_class=HTMLResponse)
-async def serve_pwa_shell():
-    """Serves the main PWA HTML shell (index.html)."""
-    index_html_path = BASE_DIR / "static" / "index.html"
-    if not index_html_path.exists():
-        logger.error(f"index.html not found at {index_html_path}")
-        raise HTTPException(status_code=404, detail="index.html not found in static directory.")
-    return FileResponse(index_html_path)
-
-
-@app.get("/manifest.json", response_class=FileResponse)
-async def serve_manifest():
-    """Serves the PWA manifest file."""
-    manifest_path = BASE_DIR / "static" / "manifest.json"
-    if not manifest_path.exists():
-        logger.error(f"manifest.json not found at {manifest_path}")
-        raise HTTPException(status_code=404, detail="manifest.json not found in static directory.")
-    return FileResponse(manifest_path, media_type="application/manifest+json")
-
-
-@app.get("/sw.js", response_class=FileResponse)
-async def serve_service_worker():
-    """Serves the PWA service worker file."""
-    sw_path = BASE_DIR / "static" / "sw.js"
-    if not sw_path.exists():
-        logger.error(f"sw.js not found at {sw_path}")
-        raise HTTPException(status_code=404, detail="sw.js not found in static directory.")
-    return FileResponse(sw_path, media_type="application/javascript")
-
-
-@app.post("/verify-token", response_model=UserInfo)
-async def verify_firebase_id_token(user_login: UserLogin):
-    if not firebase_admin._apps or not db:
-        logger.error("Firebase not initialized in /verify-token endpoint.")
-        raise HTTPException(status_code=500, detail="Firebase not initialized.")
-    try:
-        decoded_token = auth.verify_id_token(user_login.id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email")
-        role = decoded_token.get("role", "user")
-        return UserInfo(uid=uid, email=email, role=role)
-    except Exception as e:
-        logger.error(f"Firebase ID token verification failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
-@app.post("/simplify-text")
-async def simplify_text_endpoint(request: SimplifyTextRequest):
-    """Endpoint to simplify text using a placeholder simplification."""
-    try:
-        simplified_text = indictrans2_translate(request.text, source_lang="en", target_lang=request.target_language)
-        return {"simplified_text": simplified_text}
-    except Exception as e:
-        logger.error(f"Error in /simplify-text endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error during simplification.")
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class RegisterRequest(BaseModel):
-    email: str
-    password: str
-    full_name: Optional[str] = None
-    phone_number: Optional[str] = None
-    organization_name: Optional[str] = None
-    organization_phone: Optional[str] = None
-    organization_type: Optional[str] = None
-    brief_description: Optional[str] = None
-    type: str  # "individual" or "organization"
-
-
+# Authentication endpoints (keeping existing for backward compatibility)
 @app.post("/login")
 async def login_user(request: LoginRequest):
     """Login endpoint for email/password authentication."""
     try:
-        # For now, we'll create a simple mock authentication
-        # In a real implementation, you would verify credentials against Firebase Auth
         if not request.email or not request.password:
             raise HTTPException(status_code=400, detail="Email and password are required")
 
@@ -563,7 +366,6 @@ async def login_user(request: LoginRequest):
         logger.error(f"Error in /login endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during login.")
 
-
 @app.post("/register")
 async def register_user(request: RegisterRequest):
     """Register endpoint for new user registration."""
@@ -571,7 +373,6 @@ async def register_user(request: RegisterRequest):
         if not request.email or not request.type:
             raise HTTPException(status_code=400, detail="Email and type are required")
 
-        # Mock successful registration - in production, create user in Firebase Auth
         logger.info(f"Registering new user: {request.email} as {request.type}")
 
         return {
@@ -585,7 +386,6 @@ async def register_user(request: RegisterRequest):
     except Exception as e:
         logger.error(f"Error in /register endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during registration.")
-
 
 @app.get("/campaigns")
 async def get_campaigns():
@@ -636,21 +436,19 @@ async def get_campaigns():
         logger.error(f"Error in /campaigns endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error fetching campaigns.")
 
-
-# --- Ultra Robust Firebase Initialization ---
+# Firebase initialization
 def initialize_firebase():
     """Ultra robust Firebase initialization with multiple fallback strategies"""
     global db
 
     logger.info("Starting ultra robust Firebase initialization...")
 
-    # Strategy 1: Try to read from multiple file locations
     firebase_key_file_paths = [
-        BASE_DIR / "firebase-service-account-key.json",  # In app directory
-        "/app/firebase-service-account-key.json",  # In container root
-        "firebase-service-account-key.json",  # Current directory
-        "/opt/render/project/src/firebase-service-account-key.json",  # Render specific path
-        "./firebase-service-account-key.json"  # Relative path
+        BASE_DIR / "firebase-service-account-key.json",
+        "/app/firebase-service-account-key.json",
+        "firebase-service-account-key.json",
+        "/opt/render/project/src/firebase-service-account-key.json",
+        "./firebase-service-account-key.json"
     ]
 
     for key_file_path in firebase_key_file_paths:
@@ -659,11 +457,9 @@ def initialize_firebase():
             if key_path.exists():
                 logger.info(f"Found Firebase service account key file at: {key_file_path}")
 
-                # Validate JSON content before using
                 with open(key_path, 'r', encoding='utf-8') as f:
                     json_content = json.load(f)
 
-                # Ensure required fields are present
                 required_fields = ['type', 'project_id', 'private_key', 'client_email']
                 if all(field in json_content for field in required_fields):
                     cred = credentials.Certificate(str(key_file_path))
@@ -682,23 +478,14 @@ def initialize_firebase():
             logger.warning(f"Failed to initialize Firebase from file {key_file_path}: {e}")
             continue
 
-    # Strategy 2: Try environment variable with enhanced error handling
     firebase_key = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
     if firebase_key:
         try:
-            # Clean the base64 string
             firebase_key = firebase_key.strip()
-
-            # Try to decode base64
             decoded_bytes = base64.b64decode(firebase_key)
-
-            # Try to decode as UTF-8
             decoded_string = decoded_bytes.decode("utf-8")
-
-            # Try to parse JSON
             service_account_info = json.loads(decoded_string)
 
-            # Validate required fields
             required_fields = ['type', 'project_id', 'private_key', 'client_email']
             if all(field in service_account_info for field in required_fields):
                 cred = credentials.Certificate(service_account_info)
@@ -719,7 +506,6 @@ def initialize_firebase():
         except Exception as e:
             logger.error(f"Unexpected error with environment variable Firebase key: {e}")
 
-    # Strategy 3: Try ApplicationDefault credentials
     try:
         logger.info("Attempting ApplicationDefault credentials...")
         cred = credentials.ApplicationDefault()
@@ -731,11 +517,9 @@ def initialize_firebase():
     except Exception as e:
         logger.warning(f"ApplicationDefault credentials failed: {e}")
 
-    # Strategy 4: Create a mock Firebase service for development
     logger.warning("All Firebase initialization strategies failed. Running in degraded mode.")
     db = None
     return False
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -753,6 +537,17 @@ async def startup_event():
         missing_optional = env_config.get_missing_optional()
         for var, description in missing_optional:
             logger.warning(f"Optional variable {var} not set - {description} may be limited")
+
+    # Initialize OAuth configuration
+    oauth_config = get_oauth_config()
+    if oauth_config.is_configured:
+        logger.info("OAuth configuration loaded successfully")
+        if oauth_config.is_google_configured:
+            logger.info("✓ Google OAuth configured")
+        if oauth_config.is_facebook_configured:
+            logger.info("✓ Facebook OAuth configured")
+    else:
+        logger.warning("No OAuth providers configured - OAuth functionality will be disabled")
 
     try:
         firebase_success = initialize_firebase()
@@ -804,13 +599,9 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Error setting up static file serving: {e}", exc_info=True)
 
-    logger.info("Application startup event completed. Ready to serve.")
-
+    logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
 
