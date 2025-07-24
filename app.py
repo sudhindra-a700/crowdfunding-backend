@@ -26,9 +26,9 @@ import firebase_admin
 from firebase_admin import credentials, auth, firestore, messaging
 
 # OAuth imports
-from oauth_routes import get_oauth_router
-from oauth_config import get_oauth_config
-from jwt_utils import get_jwt_manager
+from .oauth_routes import get_oauth_router
+from .oauth_config import get_oauth_config
+from .jwt_utils import get_jwt_manager
 
 # Algolia Search Client
 try:

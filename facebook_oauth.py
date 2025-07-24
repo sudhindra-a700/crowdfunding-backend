@@ -8,9 +8,8 @@ from typing import Dict, Any, Optional
 from fastapi import HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 import secrets
-
-from oauth_config import get_oauth_config, OAuthUser, OAuthProvider
-from jwt_utils import get_jwt_manager, TokenResponse
+from .oauth_config import get_oauth_config, OAuthUser, OAuthProvider
+from .jwt_utils import get_jwt_manager, TokenResponse
 
 logger = logging.getLogger(__name__)
 
