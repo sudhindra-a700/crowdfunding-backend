@@ -9,10 +9,10 @@ from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from .google_oauth import get_google_oauth_handler
-from .facebook_oauth import get_facebook_oauth_handler
-from .jwt_utils import get_jwt_manager
-from .oauth_config import get_oauth_config
+from google_oauth import get_google_oauth_handler
+from facebook_oauth import get_facebook_oauth_handler
+from jwt_utils import get_jwt_manager
+from oauth_config import get_oauth_config
 
 logger = logging.getLogger(__name__)
 
