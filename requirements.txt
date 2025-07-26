@@ -1,21 +1,32 @@
+# Core FastAPI and web server dependencies
 fastapi==0.111.0
 requests==2.32.3
-firebase-admin==6.5.0
-algoliasearch==3.0.0
 gunicorn==22.0.0
 uvicorn==0.30.1
 pydantic==2.7.4
+
+# Firebase and search dependencies
+firebase-admin==6.5.0
+algoliasearch==3.0.0
+
+# Scientific/ML dependencies
 numpy==1.24.3
 scikit-learn==1.5.0
 pandas==1.5.3
 Cython==0.29.36
 matplotlib==3.9.0
+
+# Transformers and PyTorch
 torch==2.3.1
 transformers==4.42.3
 datasets==2.20.0
 sentencepiece
 shap==0.45.0
+
+# System monitoring
 psutil>=5.9.0
+
+# OAuth dependencies (ESSENTIAL for OAuth functionality)
 authlib==1.3.1
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0
@@ -23,4 +34,8 @@ PyJWT==2.8.0
 python-multipart==0.0.9
 python-dotenv==1.0.1
 itsdangerous==2.2.0
+
+# Development dependencies (optional for production)
 watchfiles
+
+
