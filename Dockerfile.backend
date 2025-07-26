@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for FastAPI Backend with IndicTransToolkit
+# Multi-stage Dockerfile for FastAPI Backend with OAuth Integration
 # Stage 1: Build stage with all build dependencies
 FROM python:3.10-slim-bullseye AS builder
 
@@ -70,9 +70,26 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Copy the application code (excluding IndicTransToolkit-main as it's already installed)
+# Copy the main application files
 COPY --chown=appuser:appuser app.py .
 COPY --chown=appuser:appuser fraud_detection.py .
+
+# Copy OAuth integration files (FIXED: Added all OAuth files)
+COPY --chown=appuser:appuser oauth_routes.py .
+COPY --chown=appuser:appuser oauth_config.py .
+COPY --chown=appuser:appuser google_oauth.py .
+COPY --chown=appuser:appuser facebook_oauth.py .
+COPY --chown=appuser:appuser jwt_utils.py .
+
+# Copy data files
+COPY --chown=appuser:appuser DEhli.csv .
+COPY --chown=appuser:appuser ngo_fraud.csv .
+
+# Copy Firebase service account key (if needed)
+COPY --chown=appuser:appuser firebase-service-account-key.json .
+
+# Copy static directory if it exists
+COPY --chown=appuser:appuser static/ ./static/
 
 # Create necessary directories with proper permissions
 RUN mkdir -p /app/static/icons /app/static/shap_plots \
@@ -91,3 +108,5 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
 # Command to run the FastAPI application using Gunicorn with Uvicorn workers
 # It listens on all network interfaces (0.0.0.0) on the exposed port 8000
 CMD ["gunicorn", "app:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100"]
+
+

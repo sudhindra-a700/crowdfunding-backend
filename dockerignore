@@ -1,23 +1,74 @@
+# Git and version control
 .git
 .gitignore
 .vscode
+
+# Python cache and compiled files
 __pycache__
 *.pyc
 *.pyo
 *.pyd
 .Python
+
+# Virtual environments
 env
 venv
+
+# Environment files (will be set via Render environment variables)
 .env
+
+# OS files
 .DS_Store
+
+# Development and testing
 .ipynb_checkpoints
 .pytest_cache
 /test_project
+
+# Upload and temporary files
 /upload
 /analysis.md
 /solution.md
 /todo.md
+
+# Backup and fixed files (don't include in Docker build)
 /app_enhanced.py
 /Dockerfile.backend.fixed
 /.dockerignore.fixed
+
+# Documentation (optional - remove if you want docs in container)
+*.md
+!README.md
+
+# IDE files
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
 
