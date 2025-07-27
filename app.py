@@ -17,9 +17,8 @@ import psutil
 import base64
 import secrets
 
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
-import urllib.parse
+from typing import Optional, List, Dict, Any, Union
+from pydantic import BaseModel, Field, model_validator # Import model_validator
 
 # Firebase Admin SDK imports
 import firebase_admin
@@ -170,16 +169,59 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+# --- New Pydantic Models for Registration and Profile Update ---
+
+class IndividualDetails(BaseModel):
+    full_name: str
+    phone: str
+    address: str # Added address for individual
+
+class OrganizationContactPersonDetails(BaseModel):
+    contact_full_name: str
+    contact_phone: str
+
+class OrganizationDetails(BaseModel):
+    organization_name: str
+    organization_type: str
+    description: str
+    address: str
+
 class RegisterRequest(BaseModel):
     email: str
     password: str
+    user_type: str = Field(..., pattern="^(individual|organization)$") # Enforce type
+    individual_data: Optional[IndividualDetails] = None
+    organization_contact_data: Optional[OrganizationContactPersonDetails] = None
+    organization_data: Optional[OrganizationDetails] = None
+
+    # Validator to ensure correct data based on user_type
+    @model_validator(mode='after')
+    def validate_data_based_on_type(self):
+        if self.user_type == "individual":
+            if not self.individual_data:
+                raise ValueError("individual_data is required for individual user_type")
+            if self.organization_contact_data or self.organization_data:
+                raise ValueError("organization data should not be provided for individual user_type")
+        elif self.user_type == "organization":
+            if not self.organization_contact_data or not self.organization_data:
+                raise ValueError("organization_contact_data and organization_data are required for organization user_type")
+            if self.individual_data:
+                raise ValueError("individual_data should not be provided for organization user_type")
+        return self
+
+class UpdateProfileRequest(BaseModel):
+    user_type: str = Field(..., pattern="^(individual|organization)$")
+    # For individual updates
     full_name: Optional[str] = None
-    phone_number: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    # For organization updates
+    contact_full_name: Optional[str] = None
+    contact_phone: Optional[str] = None
     organization_name: Optional[str] = None
-    organization_phone: Optional[str] = None
     organization_type: Optional[str] = None
-    brief_description: Optional[str] = None
-    type: str  # "individual" or "organization"
+    description: Optional[str] = None
+    # Note: Email is not updated via this endpoint as it's the primary identifier
 
 # Create FastAPI app
 app = FastAPI(
@@ -354,11 +396,20 @@ async def login_user(request: LoginRequest):
         # Mock successful login - in production, verify against Firebase Auth
         mock_token = f"mock_token_{request.email}_{int(time.time())}"
 
+        # In a real app, you'd fetch user_info from your database after authentication
+        # For now, we'll return a basic mock user_info
+        mock_user_info = {
+            "id": f"mock_user_{request.email}",
+            "email": request.email,
+            "name": "Mock User",
+            "provider": "email/password",
+            "provider_id": "N/A"
+        }
+
         return {
             "access_token": mock_token,
             "token_type": "bearer",
-            "role": "user",
-            "email": request.email
+            "user_info": mock_user_info # Include user_info in login response
         }
     except HTTPException:
         raise
@@ -370,22 +421,87 @@ async def login_user(request: LoginRequest):
 async def register_user(request: RegisterRequest):
     """Register endpoint for new user registration."""
     try:
-        if not request.email or not request.type:
-            raise HTTPException(status_code=400, detail="Email and type are required")
+        logger.info(f"Registering new user: {request.email} as {request.user_type}")
 
-        logger.info(f"Registering new user: {request.email} as {request.type}")
+        # In a real application, you would save this to a database (e.g., Firestore)
+        # For now, we'll just log and return a success message.
+        if request.user_type == "individual":
+            logger.info(f"Individual Registration Data: {request.individual_data.model_dump_json()}")
+            # Example: Save to Firestore
+            # if db:
+            #     user_ref = db.collection("users").document(request.email)
+            #     user_ref.set({
+            #         "email": request.email,
+            #         "user_type": request.user_type,
+            #         "full_name": request.individual_data.full_name,
+            #         "phone": request.individual_data.phone,
+            #         "address": request.individual_data.address,
+            #         "created_at": firestore.SERVER_TIMESTAMP
+            #     })
+        elif request.user_type == "organization":
+            logger.info(f"Organization Contact Data: {request.organization_contact_data.model_dump_json()}")
+            logger.info(f"Organization Details Data: {request.organization_data.model_dump_json()}")
+            # Example: Save to Firestore
+            # if db:
+            #     user_ref = db.collection("users").document(request.email)
+            #     user_ref.set({
+            #         "email": request.email,
+            #         "user_type": request.user_type,
+            #         "contact_full_name": request.organization_contact_data.contact_full_name,
+            #         "contact_phone": request.organization_contact_data.contact_phone,
+            #         "organization_name": request.organization_data.organization_name,
+            #         "organization_type": request.organization_data.organization_type,
+            #         "description": request.organization_data.description,
+            #         "address": request.organization_data.address,
+            #         "created_at": firestore.SERVER_TIMESTAMP
+            #     })
 
         return {
             "message": "Registration successful",
             "email": request.email,
-            "type": request.type,
+            "user_type": request.user_type,
             "status": "success"
         }
+    except ValueError as e:
+        logger.error(f"Validation error in /register endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=422, detail=str(e)) # Unprocessable Entity for validation errors
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in /register endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during registration.")
+
+@app.post("/update_profile")
+async def update_profile(request: UpdateProfileRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Update user profile with additional details."""
+    try:
+        user_id = current_user.get("id")
+        user_email = current_user.get("email")
+        logger.info(f"Updating profile for user: {user_id} ({user_email}) with type: {request.user_type}")
+
+        # In a real application, you would fetch the user's existing data from Firestore
+        # and then update it with the new fields.
+        # For now, we'll simulate the update and return success.
+
+        update_data = request.model_dump(exclude_unset=True) # Only include fields that were set in the request
+        logger.info(f"Received update data: {update_data}")
+
+        # Example: Update in Firestore
+        # if db:
+        #     user_ref = db.collection("users").document(user_email) # Assuming email is the doc ID
+        #     user_ref.update(update_data)
+
+        return {
+            "message": "Profile updated successfully",
+            "user_id": user_id,
+            "updated_fields": update_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /update_profile endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during profile update.")
+
 
 @app.get("/campaigns")
 async def get_campaigns():
