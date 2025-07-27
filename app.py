@@ -16,9 +16,10 @@ import time
 import psutil
 import base64
 import secrets
+# import csv # Removed csv module as we are moving to Firestore
 
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field, model_validator # Import model_validator
+from pydantic import BaseModel, Field, model_validator  # Import model_validator
 
 # Firebase Admin SDK imports
 import firebase_admin
@@ -32,10 +33,12 @@ from jwt_utils import get_jwt_manager
 # Algolia Search Client
 try:
     from algoliasearch.search_client import SearchClient
+
     ALGOLIA_AVAILABLE = True
 except ImportError:
     ALGOLIA_AVAILABLE = False
     SearchClient = None
+
 
 # --- Enhanced Logging Configuration ---
 def setup_logging():
@@ -82,7 +85,9 @@ def setup_logging():
 
     return logging.getLogger(__name__)
 
+
 logger = setup_logging()
+
 
 class EnvironmentConfig:
     def __init__(self):
@@ -147,38 +152,48 @@ class EnvironmentConfig:
     def get_missing_optional(self) -> List[tuple]:
         return self.missing_optional
 
+
 env_config = EnvironmentConfig()
+
 
 # Pydantic models
 class UserLogin(BaseModel):
     id_token: str
 
+
 class UserInfo(BaseModel):
     uid: str
     email: Optional[str] = None
     role: str = "user"
+    user_type: Optional[str] = None  # Added user_type to UserInfo
+
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+
 class SearchQuery(BaseModel):
     query: str
+
 
 class LoginRequest(BaseModel):
     email: str
     password: str
+
 
 # --- New Pydantic Models for Registration and Profile Update ---
 
 class IndividualDetails(BaseModel):
     full_name: str
     phone: str
-    address: str # Added address for individual
+    address: str
+
 
 class OrganizationContactPersonDetails(BaseModel):
     contact_full_name: str
     contact_phone: str
+
 
 class OrganizationDetails(BaseModel):
     organization_name: str
@@ -186,10 +201,16 @@ class OrganizationDetails(BaseModel):
     description: str
     address: str
 
+
 class RegisterRequest(BaseModel):
     email: str
-    password: str
-    user_type: str = Field(..., pattern="^(individual|organization)$") # Enforce type
+
+    # Password is now optional for OAuth registrations where email/password might not be set directly
+    # However, for direct email/password registration, it should be required.
+    # The frontend should ensure it's provided when necessary.
+    password: Optional[str] = None
+
+    user_type: str = Field(..., pattern="^(individual|organization)$")  # Enforce type
     individual_data: Optional[IndividualDetails] = None
     organization_contact_data: Optional[OrganizationContactPersonDetails] = None
     organization_data: Optional[OrganizationDetails] = None
@@ -204,10 +225,12 @@ class RegisterRequest(BaseModel):
                 raise ValueError("organization data should not be provided for individual user_type")
         elif self.user_type == "organization":
             if not self.organization_contact_data or not self.organization_data:
-                raise ValueError("organization_contact_data and organization_data are required for organization user_type")
+                raise ValueError(
+                    "organization_contact_data and organization_data are required for organization user_type")
             if self.individual_data:
                 raise ValueError("individual_data should not be provided for organization user_type")
         return self
+
 
 class UpdateProfileRequest(BaseModel):
     user_type: str = Field(..., pattern="^(individual|organization)$")
@@ -222,6 +245,15 @@ class UpdateProfileRequest(BaseModel):
     organization_type: Optional[str] = None
     description: Optional[str] = None
     # Note: Email is not updated via this endpoint as it's the primary identifier
+
+
+class CreateCampaignRequest(BaseModel):
+    campaign_name: str
+    description: str
+    goal: float
+    category: str
+    image_base64: Optional[str] = None  # Base64 encoded image string
+
 
 # Create FastAPI app
 app = FastAPI(
@@ -261,6 +293,7 @@ algolia_client = None
 algolia_index = None
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/verify-token")
+
 
 # Enhanced health check with OAuth status
 @app.get("/health")
@@ -342,6 +375,7 @@ async def health_check():
             "timestamp": time.time()
         }, 500
 
+
 @app.get("/ready")
 async def readiness_check():
     try:
@@ -354,28 +388,56 @@ async def readiness_check():
         logger.error(f"Readiness check failed: {e}", exc_info=True)
         return {"ready": False, "reason": str(e)}, 503
 
+
 @app.get("/live")
 async def liveness_check():
     return {"alive": True, "timestamp": time.time()}
 
+
 # Authentication functions
 async def get_current_user(id_token: str = Depends(oauth2_scheme)):
-    if not firebase_admin._apps or not db:
-        logger.error("Firebase not initialized in get_current_user.")
-        raise HTTPException(status_code=500, detail="Firebase not initialized.")
+    # In a real application, you'd verify the token against Firebase Auth or your JWT secret
+    # For now, we'll mock the user info based on the token content (if it's a mock token)
+    # or rely on the JWTManager for OAuth tokens.
+    jwt_manager = get_jwt_manager()
     try:
-        decoded_token = auth.verify_id_token(id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email")
-        role = decoded_token.get("role", "user")
-        return UserInfo(uid=uid, email=email, role=role)
+        user_data = jwt_manager.get_user_from_token(id_token)
+        # If the token is from OAuth, user_data will have provider info.
+        # If it's a mock login token, we'll need to infer user_type
+
+        # Mock user_type for demonstration if not from OAuth
+        if user_data.get("provider") not in ["google", "facebook"]:
+            # For simplicity, let's assume mock users are individuals unless specified
+            # In a real app, you'd fetch this from your DB based on user_data.get("id") or email
+
+            # Attempt to retrieve user_type from Firestore if available
+            if db:
+                user_doc = await db.collection("users").document(user_data.get("email")).get()
+                if user_doc.exists:
+                    user_data["user_type"] = user_doc.to_dict().get("user_type", "individual")
+                else:
+                    user_data["user_type"] = "individual"  # Default if not found
+            else:
+                user_data["user_type"] = "individual"  # Default if Firestore not initialized
+                if "org" in user_data.get("email", ""):  # Simple heuristic for testing
+                    user_data["user_type"] = "organization"
+
+        return UserInfo(
+            uid=user_data.get("id"),
+            email=user_data.get("email"),
+            role="user",  # Default role
+            user_type=user_data.get("user_type", "individual")  # Pass user_type
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Firebase ID token verification failed: {e}", exc_info=True)
+        logger.error(f"Error getting current user from token: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
 
 async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
     if current_user.role != "admin":
@@ -385,6 +447,7 @@ async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
         )
     return current_user
 
+
 # Authentication endpoints (keeping existing for backward compatibility)
 @app.post("/login")
 async def login_user(request: LoginRequest):
@@ -393,23 +456,45 @@ async def login_user(request: LoginRequest):
         if not request.email or not request.password:
             raise HTTPException(status_code=400, detail="Email and password are required")
 
-        # Mock successful login - in production, verify against Firebase Auth
+        # In a real application, you would verify the email/password against Firebase Auth
+        # and then fetch the user's full profile from Firestore or your database.
+        # For now, we'll simulate a login and return a mock token and user info.
+
+        simulated_user_type = "individual"
+        mock_user_name = request.email.split('@')[0].capitalize()
+
+        if db:
+            user_doc = await db.collection("users").document(request.email).get()
+            if user_doc.exists:
+                user_data_from_db = user_doc.to_dict()
+                simulated_user_type = user_data_from_db.get("user_type", "individual")
+                if simulated_user_type == "individual":
+                    mock_user_name = user_data_from_db.get("full_name", mock_user_name)
+                elif simulated_user_type == "organization":
+                    mock_user_name = user_data_from_db.get("contact_full_name", mock_user_name)
+            else:
+                # If user not found in DB, default to individual for mock
+                simulated_user_type = "individual"
+        else:
+            # Fallback for when Firebase is not initialized
+            if "org" in request.email.lower():  # Simple heuristic for testing organization login
+                simulated_user_type = "organization"
+
         mock_token = f"mock_token_{request.email}_{int(time.time())}"
 
-        # In a real app, you'd fetch user_info from your database after authentication
-        # For now, we'll return a basic mock user_info
         mock_user_info = {
             "id": f"mock_user_{request.email}",
             "email": request.email,
-            "name": "Mock User",
+            "name": mock_user_name,
             "provider": "email/password",
-            "provider_id": "N/A"
+            "provider_id": "N/A",
+            "user_type": simulated_user_type  # Include user_type here
         }
 
         return {
             "access_token": mock_token,
             "token_type": "bearer",
-            "user_info": mock_user_info # Include user_info in login response
+            "user_info": mock_user_info  # Include user_info in login response
         }
     except HTTPException:
         raise
@@ -417,44 +502,39 @@ async def login_user(request: LoginRequest):
         logger.error(f"Error in /login endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during login.")
 
+
 @app.post("/register")
 async def register_user(request: RegisterRequest):
     """Register endpoint for new user registration."""
     try:
+        if not db:
+            raise HTTPException(status_code=503, detail="Database service not available.")
+
         logger.info(f"Registering new user: {request.email} as {request.user_type}")
 
-        # In a real application, you would save this to a database (e.g., Firestore)
-        # For now, we'll just log and return a success message.
+        user_ref = db.collection("users").document(request.email)
+
+        # Check if user already exists
+        existing_user = await user_ref.get()
+        if existing_user.exists:
+            raise HTTPException(status_code=409, detail="User with this email already exists.")
+
+        user_data_to_save = {
+            "email": request.email,
+            "password_hash": request.password,  # In a real app, hash and store password securely
+            "user_type": request.user_type,
+            "created_at": firestore.SERVER_TIMESTAMP
+        }
+
         if request.user_type == "individual":
-            logger.info(f"Individual Registration Data: {request.individual_data.model_dump_json()}")
-            # Example: Save to Firestore
-            # if db:
-            #     user_ref = db.collection("users").document(request.email)
-            #     user_ref.set({
-            #         "email": request.email,
-            #         "user_type": request.user_type,
-            #         "full_name": request.individual_data.full_name,
-            #         "phone": request.individual_data.phone,
-            #         "address": request.individual_data.address,
-            #         "created_at": firestore.SERVER_TIMESTAMP
-            #     })
+            user_data_to_save.update(request.individual_data.model_dump())
+
         elif request.user_type == "organization":
-            logger.info(f"Organization Contact Data: {request.organization_contact_data.model_dump_json()}")
-            logger.info(f"Organization Details Data: {request.organization_data.model_dump_json()}")
-            # Example: Save to Firestore
-            # if db:
-            #     user_ref = db.collection("users").document(request.email)
-            #     user_ref.set({
-            #         "email": request.email,
-            #         "user_type": request.user_type,
-            #         "contact_full_name": request.organization_contact_data.contact_full_name,
-            #         "contact_phone": request.organization_contact_data.contact_phone,
-            #         "organization_name": request.organization_data.organization_name,
-            #         "organization_type": request.organization_data.organization_type,
-            #         "description": request.organization_data.description,
-            #         "address": request.organization_data.address,
-            #         "created_at": firestore.SERVER_TIMESTAMP
-            #     })
+            user_data_to_save.update(request.organization_contact_data.model_dump())
+            user_data_to_save.update(request.organization_data.model_dump())
+
+        await user_ref.set(user_data_to_save)
+        logger.info(f"User {request.email} registered and saved to Firestore as {request.user_type}.")
 
         return {
             "message": "Registration successful",
@@ -464,32 +544,36 @@ async def register_user(request: RegisterRequest):
         }
     except ValueError as e:
         logger.error(f"Validation error in /register endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=422, detail=str(e)) # Unprocessable Entity for validation errors
+        raise HTTPException(status_code=422, detail=str(e))  # Unprocessable Entity for validation errors
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in /register endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during registration.")
 
+
 @app.post("/update_profile")
 async def update_profile(request: UpdateProfileRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Update user profile with additional details."""
     try:
+        if not db:
+            raise HTTPException(status_code=503, detail="Database service not available.")
+
         user_id = current_user.get("id")
         user_email = current_user.get("email")
         logger.info(f"Updating profile for user: {user_id} ({user_email}) with type: {request.user_type}")
 
-        # In a real application, you would fetch the user's existing data from Firestore
-        # and then update it with the new fields.
-        # For now, we'll simulate the update and return success.
+        user_ref = db.collection("users").document(user_email)
 
-        update_data = request.model_dump(exclude_unset=True) # Only include fields that were set in the request
-        logger.info(f"Received update data: {update_data}")
+        update_data = request.model_dump(exclude_unset=True)  # Only include fields that were set in the request
+        # Remove user_type from update_data as it's not meant to be changed directly via update
+        update_data.pop('user_type', None)
 
-        # Example: Update in Firestore
-        # if db:
-        #     user_ref = db.collection("users").document(user_email) # Assuming email is the doc ID
-        #     user_ref.update(update_data)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No data provided for update.")
+
+        await user_ref.update(update_data)
+        logger.info(f"User {user_email} profile updated in Firestore with: {update_data}")
 
         return {
             "message": "Profile updated successfully",
@@ -503,54 +587,139 @@ async def update_profile(request: UpdateProfileRequest, current_user: Dict[str, 
         raise HTTPException(status_code=500, detail="Internal server error during profile update.")
 
 
+@app.post("/create_campaign")
+async def create_campaign(request: CreateCampaignRequest, current_user: UserInfo = Depends(get_current_user)):
+    """Endpoint to create a new campaign."""
+    try:
+        if not db:
+            raise HTTPException(status_code=503, detail="Database service not available.")
+
+        if current_user.user_type != "organization":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only organization users can create campaigns."
+            )
+
+        logger.info(f"Organization user {current_user.email} is creating a campaign.")
+
+        campaign_data = {
+            "organization_email": current_user.email,
+            "campaign_name": request.campaign_name,
+            "description": request.description,
+            "goal": request.goal,
+            "category": request.category,
+            "funded": 0,
+            "status": "pending",
+            "created_at": firestore.SERVER_TIMESTAMP
+        }
+
+        campaign_image_url = None
+        if request.image_base64:
+            # In a real application, you would save this image to cloud storage (e.g., Google Cloud Storage, AWS S3)
+            # and store the URL in your database. For this example, we'll just acknowledge its presence.
+            logger.info(f"Received image for campaign (size: {len(request.image_base64)} bytes). "
+                        "Saving image to cloud storage is recommended for production.")
+            # Placeholder for image URL, in a real scenario this would be the URL from cloud storage
+            campaign_image_url = f"https://placehold.co/600x400/000000/FFFFFF?text={request.campaign_name.replace(' ', '+')}"
+
+        campaign_data["image_url"] = campaign_image_url
+
+        campaign_ref = db.collection("campaigns").document()  # Auto-generate document ID
+        await campaign_ref.set(campaign_data)
+
+        logger.info(f"Campaign '{request.campaign_name}' created by {current_user.email} and saved to Firestore.")
+
+        return {
+            "message": "Campaign created successfully!",
+            "campaign_id": campaign_ref.id,
+            "campaign_name": request.campaign_name,
+            "status": "success"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating campaign: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during campaign creation.")
+
+
 @app.get("/campaigns")
 async def get_campaigns():
     """Get all campaigns."""
     try:
-        # Mock campaigns data
-        mock_campaigns = [
-            {
-                "id": "1",
-                "name": "Sustainable Farming Initiative",
-                "description": "Support local farmers in adopting sustainable practices.",
-                "author": "Green Earth Foundation",
-                "funded": 75000,
-                "goal": 100000,
-                "days_left": 30,
-                "category": "Environment",
-                "verification_status": "Verified",
-                "image_url": "https://via.placeholder.com/600x400"
-            },
-            {
-                "id": "2",
-                "name": "Clean Water Project",
-                "description": "Provide access to clean and safe drinking water.",
-                "author": "Water for All",
-                "funded": 50000,
-                "goal": 80000,
-                "days_left": 45,
-                "category": "Health",
-                "verification_status": "Verified",
-                "image_url": "https://via.placeholder.com/600x400"
-            },
-            {
-                "id": "3",
-                "name": "Education for All",
-                "description": "Fund educational resources for underprivileged children.",
-                "author": "Education First",
-                "funded": 30000,
-                "goal": 60000,
-                "days_left": 60,
-                "category": "Education",
-                "verification_status": "Verified",
-                "image_url": "https://via.placeholder.com/600x400"
-            }
-        ]
+        if not db:
+            return []  # Return empty list if DB not available
 
-        return mock_campaigns
+        campaigns_ref = db.collection("campaigns")
+        docs = await campaigns_ref.stream()
+
+        campaign_list = []
+        # Use a list comprehension to await all documents
+        # Note: 'await' inside a list comprehension requires Python 3.9+ or specific async libraries.
+        # For broader compatibility, an explicit loop is safer.
+        for doc in docs:
+            campaign_data = doc.to_dict()
+            campaign_list.append({
+                "id": doc.id,
+                "name": campaign_data.get("campaign_name", "N/A"),
+                "description": campaign_data.get("description", "N/A"),
+                "author": campaign_data.get("organization_email", "N/A"),  # Assuming author is the organization email
+                "funded": campaign_data.get("funded", 0),
+                "goal": campaign_data.get("goal", 1),  # Avoid division by zero
+                # Calculate days_left based on created_at (if available) or mock it
+                "days_left": round((campaign_data.get("created_at").timestamp() + (30 * 24 * 3600) - time.time()) / (
+                            24 * 3600)) if campaign_data.get("created_at") else 30,
+                "category": campaign_data.get("category", "N/A"),
+                "verification_status": campaign_data.get("status", "pending"),
+                "image_url": campaign_data.get("image_url", "https://via.placeholder.com/600x400")
+            })
+
+        # Add mock campaigns if no real campaigns or for demonstration
+        if not campaign_list:
+            mock_campaigns = [
+                {
+                    "id": "mock1",
+                    "name": "Sustainable Farming Initiative",
+                    "description": "Support local farmers in adopting sustainable practices.",
+                    "author": "Green Earth Foundation",
+                    "funded": 75000,
+                    "goal": 100000,
+                    "days_left": 30,
+                    "category": "Environment",
+                    "verification_status": "Verified",
+                    "image_url": "https://via.placeholder.com/600x400"
+                },
+                {
+                    "id": "mock2",
+                    "name": "Clean Water Project",
+                    "description": "Provide access to clean and safe drinking water.",
+                    "author": "Water for All",
+                    "funded": 50000,
+                    "goal": 80000,
+                    "days_left": 45,
+                    "category": "Health",
+                    "verification_status": "Verified",
+                    "image_url": "https://via.placeholder.com/600x400"
+                },
+                {
+                    "id": "mock3",
+                    "name": "Education for All",
+                    "description": "Fund educational resources for underprivileged children.",
+                    "author": "Education First",
+                    "funded": 30000,
+                    "goal": 60000,
+                    "days_left": 60,
+                    "category": "Education",
+                    "verification_status": "Verified",
+                    "image_url": "https://via.placeholder.com/600x400"
+                }
+            ]
+            campaign_list.extend(mock_campaigns)
+
+        return campaign_list
     except Exception as e:
         logger.error(f"Error in /campaigns endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error fetching campaigns.")
+
 
 # Firebase initialization
 def initialize_firebase():
@@ -637,6 +806,7 @@ def initialize_firebase():
     db = None
     return False
 
+
 @app.on_event("startup")
 async def startup_event():
     global db, algolia_client, algolia_index
@@ -717,7 +887,9 @@ async def startup_event():
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
