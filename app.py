@@ -16,10 +16,9 @@ import time
 import psutil
 import base64
 import secrets
-# import csv # Removed csv module as we are moving to Firestore
 
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field, model_validator  # Import model_validator
+from pydantic import BaseModel, Field
 
 # Firebase Admin SDK imports
 import firebase_admin
@@ -30,15 +29,16 @@ from oauth_routes import get_oauth_router
 from oauth_config import get_oauth_config
 from jwt_utils import get_jwt_manager
 
+# Import fraud detection module
+from fraud_detection import predict_fraud, load_ngo_darpan_data
+
 # Algolia Search Client
 try:
     from algoliasearch.search_client import SearchClient
-
     ALGOLIA_AVAILABLE = True
 except ImportError:
     ALGOLIA_AVAILABLE = False
     SearchClient = None
-
 
 # --- Enhanced Logging Configuration ---
 def setup_logging():
@@ -85,9 +85,7 @@ def setup_logging():
 
     return logging.getLogger(__name__)
 
-
 logger = setup_logging()
-
 
 class EnvironmentConfig:
     def __init__(self):
@@ -108,7 +106,10 @@ class EnvironmentConfig:
             "FACEBOOK_CLIENT_ID": "Facebook OAuth authentication",
             "FACEBOOK_CLIENT_SECRET": "Facebook OAuth authentication",
             "JWT_SECRET_KEY": "JWT token signing",
-            "SECRET_KEY": "Session management"
+            "SECRET_KEY": "Session management",
+            "GOOGLE_REDIRECT_URI": "Google OAuth redirect URI", # Added
+            "FACEBOOK_REDIRECT_URI": "Facebook OAuth redirect URI", # Added
+            "FRONTEND_BASE_URL": "Frontend base URL for redirects" # Added
         }
         self.config = {}
         self.missing_required = []
@@ -152,148 +153,153 @@ class EnvironmentConfig:
     def get_missing_optional(self) -> List[tuple]:
         return self.missing_optional
 
-
 env_config = EnvironmentConfig()
 
-
 # Pydantic models
-class UserLogin(BaseModel):
-    id_token: str
-
-
 class UserInfo(BaseModel):
     uid: str
     email: Optional[str] = None
-    role: str = "user"
-    user_type: Optional[str] = None  # Added user_type to UserInfo
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
-class SearchQuery(BaseModel):
-    query: str
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    user_type: str = "individual"
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    organization_name: Optional[str] = None
+    organization_type: Optional[str] = None
+    description: Optional[str] = None
+    # Fields for NGO fraud data
+    ngo_darpan_id: Optional[str] = None
+    pan: Optional[str] = None
+    fcra_number: Optional[str] = None
+    is_fraudulent: Optional[bool] = None
+    fraud_score: Optional[float] = None
+    fraud_explanation: Optional[str] = None
+    verification_details: Optional[Dict[str, Any]] = None
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    id_token: str # Firebase ID token from client-side authentication
 
-
-# --- New Pydantic Models for Registration and Profile Update ---
-
-class IndividualDetails(BaseModel):
+class IndividualProfileData(BaseModel):
     full_name: str
     phone: str
     address: str
 
-
-class OrganizationContactPersonDetails(BaseModel):
+class OrganizationProfileData(BaseModel):
     contact_full_name: str
     contact_phone: str
-
-
-class OrganizationDetails(BaseModel):
     organization_name: str
     organization_type: str
     description: str
     address: str
-
+    ngo_darpan_id: Optional[str] = None
+    pan: Optional[str] = None
+    fcra_number: Optional[str] = None
 
 class RegisterRequest(BaseModel):
-    email: str
+    id_token: str # Firebase ID token from client-side authentication
+    user_type: str # "individual" or "organization"
+    individual_data: Optional[IndividualProfileData] = None
+    organization_data: Optional[OrganizationProfileData] = None
 
-    # Password is now optional for OAuth registrations where email/password might not be set directly
-    # However, for direct email/password registration, it should be required.
-    # The frontend should ensure it's provided when necessary.
-    password: Optional[str] = None
-
-    user_type: str = Field(..., pattern="^(individual|organization)$")  # Enforce type
-    individual_data: Optional[IndividualDetails] = None
-    organization_contact_data: Optional[OrganizationContactPersonDetails] = None
-    organization_data: Optional[OrganizationDetails] = None
-
-    # Validator to ensure correct data based on user_type
-    @model_validator(mode='after')
-    def validate_data_based_on_type(self):
-        if self.user_type == "individual":
-            if not self.individual_data:
-                raise ValueError("individual_data is required for individual user_type")
-            if self.organization_contact_data or self.organization_data:
-                raise ValueError("organization data should not be provided for individual user_type")
-        elif self.user_type == "organization":
-            if not self.organization_contact_data or not self.organization_data:
-                raise ValueError(
-                    "organization_contact_data and organization_data are required for organization user_type")
-            if self.individual_data:
-                raise ValueError("individual_data should not be provided for organization user_type")
-        return self
-
-
-class UpdateProfileRequest(BaseModel):
-    user_type: str = Field(..., pattern="^(individual|organization)$")
-    # For individual updates
+class UserProfileUpdateRequest(BaseModel):
+    user_type: str = "individual"
     full_name: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    # For organization updates
-    contact_full_name: Optional[str] = None
-    contact_phone: Optional[str] = None
     organization_name: Optional[str] = None
     organization_type: Optional[str] = None
     description: Optional[str] = None
-    # Note: Email is not updated via this endpoint as it's the primary identifier
+    contact_full_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    ngo_darpan_id: Optional[str] = None
+    pan: Optional[str] = None
+    fcra_number: Optional[str] = None
 
-
-class CreateCampaignRequest(BaseModel):
+class CampaignCreateRequest(BaseModel):
     campaign_name: str
     description: str
     goal: float
     category: str
-    image_base64: Optional[str] = None  # Base64 encoded image string
+    image_base64: Optional[str] = None # Base64 encoded image string
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int = Field(default=3600, description="Expires in seconds") # Default 1 hour
+    refresh_token: Optional[str] = None
+    user_info: UserInfo # Include user info directly
 
 # Create FastAPI app
 app = FastAPI(
-    title="HAVEN Backend Service with OAuth",
-    description="Crowdfunding platform backend with Google and Facebook OAuth authentication",
+    title="HAVEN Backend Service with OAuth and Firebase",
+    description="Crowdfunding platform backend with Google/Facebook OAuth and Firebase Authentication/Firestore",
     version="2.0.0"
 )
 
 # Add session middleware for OAuth state management
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+    secret_key=os.getenv("SECRET_KEY", secrets.token_urlsafe(32)) # Use env var, fallback to generated
 )
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # In production, restrict this to your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Global Firebase instances
+db: Optional[firestore.Client] = None
+firebase_auth: Optional[auth.Auth] = None
+
 # Include OAuth router
-app.include_router(get_oauth_router())
+# Ensure oauth_routes has access to db and firebase_auth
+oauth_router = get_oauth_router()
+app.include_router(oauth_router)
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Global variables
-indictrans2_model = None
-indictrans2_tokenizer = None
-indictrans2_processor = None
-DEVICE = "cpu"
-
-db = None
+# Global variables for Algolia, etc.
 algolia_client = None
 algolia_index = None
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/verify-token")
+# Dependency to get Firestore client
+def get_firestore_client() -> firestore.Client:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Firestore client not initialized.")
+    return db
 
+# Dependency to get Firebase Auth client
+def get_firebase_auth() -> auth.Auth:
+    if firebase_auth is None:
+        raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
+    return firebase_auth
+
+# Dependency to get current user from our custom JWT
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+) -> Dict[str, Any]:
+    """Get current user from our custom JWT token"""
+    jwt_manager = get_jwt_manager()
+    try:
+        user_data = jwt_manager.get_user_from_token(credentials.credentials)
+        # Ensure the UID is present in the user_data from our JWT
+        if "id" not in user_data:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
+        return user_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get current user from JWT: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
 # Enhanced health check with OAuth status
 @app.get("/health")
@@ -319,9 +325,13 @@ async def health_check():
 
         # Firebase health check
         try:
-            if db:
-                test_doc = db.collection("health_check").document("test")
-                test_doc.set({"timestamp": time.time()}, merge=True)
+            if db and firebase_auth:
+                # Test Firestore connection
+                test_doc_ref = db.collection("health_check").document("test")
+                test_doc_ref.set({"timestamp": time.time()}, merge=True)
+                # Test Firebase Auth (e.g., get a dummy user, though not ideal for health check)
+                # For a real check, you might attempt to get a non-existent user or list users (if permissions allow)
+                # For simplicity, we'll just check if the client objects exist
                 health_status["services"]["firebase"] = "connected"
             else:
                 health_status["services"]["firebase"] = "not_initialized"
@@ -357,7 +367,7 @@ async def health_check():
         if env_config.is_required_missing():
             critical_issues.extend([f"Missing required env var: {var}" for var, _ in env_config.get_missing_required()])
 
-        if not db:
+        if not db or not firebase_auth:
             critical_issues.append("Firebase not initialized")
 
         if critical_issues:
@@ -375,347 +385,339 @@ async def health_check():
             "timestamp": time.time()
         }, 500
 
-
 @app.get("/ready")
 async def readiness_check():
     try:
         if env_config.is_required_missing():
             return {"ready": False, "reason": "Missing required environment variables"}, 503
 
-        return {"ready": True, "timestamp": time.time(), "firebase_status": "connected" if db else "degraded"}
+        # Check Firebase initialization
+        if not db or not firebase_auth:
+            return {"ready": False, "reason": "Firebase not initialized"}, 503
+
+        return {"ready": True, "timestamp": time.time(), "firebase_status": "connected"}
 
     except Exception as e:
         logger.error(f"Readiness check failed: {e}", exc_info=True)
         return {"ready": False, "reason": str(e)}, 503
 
-
 @app.get("/live")
 async def liveness_check():
     return {"alive": True, "timestamp": time.time()}
 
+# --- Authentication and Registration Endpoints ---
 
-# Authentication functions
-async def get_current_user(id_token: str = Depends(oauth2_scheme)):
-    # In a real application, you'd verify the token against Firebase Auth or your JWT secret
-    # For now, we'll mock the user info based on the token content (if it's a mock token)
-    # or rely on the JWTManager for OAuth tokens.
-    jwt_manager = get_jwt_manager()
+@app.post("/login", response_model=Token)
+async def login_user(
+    request: LoginRequest,
+    firestore_db: firestore.Client = Depends(get_firestore_client),
+    firebase_auth_client: auth.Auth = Depends(get_firebase_auth)
+):
+    """
+    Login endpoint for Firebase ID token authentication.
+    Expects Firebase ID token from client-side authentication.
+    """
     try:
-        user_data = jwt_manager.get_user_from_token(id_token)
-        # If the token is from OAuth, user_data will have provider info.
-        # If it's a mock login token, we'll need to infer user_type
+        # Verify the Firebase ID token
+        decoded_token = firebase_auth_client.verify_id_token(request.id_token)
+        uid = decoded_token["uid"]
+        email = decoded_token.get("email")
 
-        # Mock user_type for demonstration if not from OAuth
-        if user_data.get("provider") not in ["google", "facebook"]:
-            # For simplicity, let's assume mock users are individuals unless specified
-            # In a real app, you'd fetch this from your DB based on user_data.get("id") or email
+        # Fetch user data from Firestore
+        user_doc_ref = firestore_db.collection("users").document(uid)
+        user_doc = user_doc_ref.get()
 
-            # Attempt to retrieve user_type from Firestore if available
-            if db:
-                user_doc = await db.collection("users").document(user_data.get("email")).get()
-                if user_doc.exists:
-                    user_data["user_type"] = user_doc.to_dict().get("user_type", "individual")
-                else:
-                    user_data["user_type"] = "individual"  # Default if not found
-            else:
-                user_data["user_type"] = "individual"  # Default if Firestore not initialized
-                if "org" in user_data.get("email", ""):  # Simple heuristic for testing
-                    user_data["user_type"] = "organization"
+        if not user_doc.exists:
+            logger.warning(f"User profile not found in Firestore for UID: {uid}. Email: {email}")
+            # This case might happen if user registered via Firebase Auth but profile creation failed.
+            # Or if it's a new OAuth user completing profile.
+            # For now, we'll return basic info and let frontend guide to profile completion.
+            user_data = {
+                "uid": uid,
+                "email": email,
+                "name": decoded_token.get("name", email),
+                "picture": decoded_token.get("picture"),
+                "user_type": "individual" # Default to individual if no profile
+            }
+            # Create a basic profile if it doesn't exist, to avoid breaking frontend
+            user_doc_ref.set(user_data, merge=True)
+            logger.info(f"Created basic Firestore profile for new login UID: {uid}")
+        else:
+            user_data = user_doc.to_dict()
+            user_data['uid'] = uid # Ensure uid is in the dict
 
-        return UserInfo(
-            uid=user_data.get("id"),
-            email=user_data.get("email"),
-            role="user",  # Default role
-            user_type=user_data.get("user_type", "individual")  # Pass user_type
+        # Create our custom JWT
+        jwt_manager = get_jwt_manager()
+        access_token = jwt_manager.create_access_token(user_data)
+        refresh_token = jwt_manager.create_refresh_token(uid) # Use UID for refresh token subject
+
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=jwt_manager.expiration_hours * 3600,
+            refresh_token=refresh_token,
+            user_info=UserInfo(**user_data)
         )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting current user from token: {e}", exc_info=True)
+
+    except auth.InvalidIdTokenError as e:
+        logger.error(f"Invalid Firebase ID token: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
+            detail="Invalid Firebase ID token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-
-async def get_admin_user(current_user: UserInfo = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
-    return current_user
-
-
-# Authentication endpoints (keeping existing for backward compatibility)
-@app.post("/login")
-async def login_user(request: LoginRequest):
-    """Login endpoint for email/password authentication."""
-    try:
-        if not request.email or not request.password:
-            raise HTTPException(status_code=400, detail="Email and password are required")
-
-        # In a real application, you would verify the email/password against Firebase Auth
-        # and then fetch the user's full profile from Firestore or your database.
-        # For now, we'll simulate a login and return a mock token and user info.
-
-        simulated_user_type = "individual"
-        mock_user_name = request.email.split('@')[0].capitalize()
-
-        if db:
-            user_doc = await db.collection("users").document(request.email).get()
-            if user_doc.exists:
-                user_data_from_db = user_doc.to_dict()
-                simulated_user_type = user_data_from_db.get("user_type", "individual")
-                if simulated_user_type == "individual":
-                    mock_user_name = user_data_from_db.get("full_name", mock_user_name)
-                elif simulated_user_type == "organization":
-                    mock_user_name = user_data_from_db.get("contact_full_name", mock_user_name)
-            else:
-                # If user not found in DB, default to individual for mock
-                simulated_user_type = "individual"
-        else:
-            # Fallback for when Firebase is not initialized
-            if "org" in request.email.lower():  # Simple heuristic for testing organization login
-                simulated_user_type = "organization"
-
-        mock_token = f"mock_token_{request.email}_{int(time.time())}"
-
-        mock_user_info = {
-            "id": f"mock_user_{request.email}",
-            "email": request.email,
-            "name": mock_user_name,
-            "provider": "email/password",
-            "provider_id": "N/A",
-            "user_type": simulated_user_type  # Include user_type here
-        }
-
-        return {
-            "access_token": mock_token,
-            "token_type": "bearer",
-            "user_info": mock_user_info  # Include user_info in login response
-        }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in /login endpoint: {e}", exc_info=True)
+        logger.error(f"Error during login: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during login.")
 
 
-@app.post("/register")
-async def register_user(request: RegisterRequest):
-    """Register endpoint for new user registration."""
+@app.post("/register", response_model=Token)
+async def register_user(
+    request: RegisterRequest,
+    firestore_db: firestore.Client = Depends(get_firestore_client),
+    firebase_auth_client: auth.Auth = Depends(get_firebase_auth)
+):
+    """
+    Register endpoint for new user registration.
+    Expects Firebase ID token from client-side authentication
+    and additional profile data.
+    """
     try:
-        if not db:
-            raise HTTPException(status_code=503, detail="Database service not available.")
+        # Verify the Firebase ID token
+        decoded_token = firebase_auth_client.verify_id_token(request.id_token)
+        uid = decoded_token["uid"]
+        email = decoded_token.get("email")
+        name = decoded_token.get("name")
 
-        logger.info(f"Registering new user: {request.email} as {request.user_type}")
-
-        user_ref = db.collection("users").document(request.email)
-
-        # Check if user already exists
-        existing_user = await user_ref.get()
-        if existing_user.exists:
-            raise HTTPException(status_code=409, detail="User with this email already exists.")
-
-        user_data_to_save = {
-            "email": request.email,
-            "password_hash": request.password,  # In a real app, hash and store password securely
+        # Prepare user data for Firestore
+        user_data = {
+            "uid": uid,
+            "email": email,
+            "name": name,
             "user_type": request.user_type,
-            "created_at": firestore.SERVER_TIMESTAMP
+            "registered_at": firestore.SERVER_TIMESTAMP
         }
 
-        if request.user_type == "individual":
-            user_data_to_save.update(request.individual_data.model_dump())
+        if request.user_type == "individual" and request.individual_data:
+            user_data.update({
+                "name": request.individual_data.full_name, # Use provided full name if available
+                "phone": request.individual_data.phone,
+                "address": request.individual_data.address
+            })
+        elif request.user_type == "organization" and request.organization_data:
+            user_data.update({
+                "contact_full_name": request.organization_data.contact_full_name,
+                "contact_phone": request.organization_data.contact_phone,
+                "organization_name": request.organization_data.organization_name,
+                "organization_type": request.organization_data.organization_type,
+                "description": request.organization_data.description,
+                "address": request.organization_data.address,
+                "ngo_darpan_id": request.organization_data.ngo_darpan_id,
+                "pan": request.organization_data.pan,
+                "fcra_number": request.organization_data.fcra_number
+            })
 
-        elif request.user_type == "organization":
-            user_data_to_save.update(request.organization_contact_data.model_dump())
-            user_data_to_save.update(request.organization_data.model_dump())
+            # Integrate NGO fraud data if organization
+            org_data_for_fraud_check = {
+                'org_name': request.organization_data.organization_name,
+                'bio': request.organization_data.description,
+                'pan': request.organization_data.pan,
+                'ngo_darpan_id': request.organization_data.ngo_darpan_id,
+                'fcra_number': request.organization_data.fcra_number,
+                # Add other relevant fields for fraud detection if available
+                'recent_posts': '', # Placeholder
+                'follower_count': 0, # Placeholder
+                'post_count': 0, # Placeholder
+                'account_age_days': 0, # Placeholder
+                'engagement_rate': 0.0 # Placeholder
+            }
+            try:
+                # Path to NGO Darpan CSV
+                ngo_darpan_csv_path = BASE_DIR / "DEhli.csv"
+                # Load NGO Darpan data (will be cached)
+                load_ngo_darpan_data(str(ngo_darpan_csv_path))
 
-        await user_ref.set(user_data_to_save)
-        logger.info(f"User {request.email} registered and saved to Firestore as {request.user_type}.")
+                fraud_score, explanation, plot_path, verification_details = predict_fraud(
+                    org_data_for_fraud_check, api_key_trustcheckr=os.getenv("TRUSTCHECKR_API_KEY", "mock_key")
+                )
+                user_data["is_fraudulent"] = fraud_score > 0.5 # Simple threshold
+                user_data["fraud_score"] = fraud_score
+                user_data["fraud_explanation"] = explanation
+                user_data["verification_details"] = verification_details # Store full verification details
+                logger.info(f"Fraud detection run for new organization {uid}. Score: {fraud_score:.2f}")
 
-        return {
-            "message": "Registration successful",
-            "email": request.email,
-            "user_type": request.user_type,
-            "status": "success"
-        }
-    except ValueError as e:
-        logger.error(f"Validation error in /register endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=422, detail=str(e))  # Unprocessable Entity for validation errors
-    except HTTPException:
-        raise
+            except Exception as e:
+                logger.error(f"Fraud detection failed for organization {uid}: {e}", exc_info=True)
+                user_data["is_fraudulent"] = None
+                user_data["fraud_score"] = None
+                user_data["fraud_explanation"] = "Fraud detection service unavailable."
+                user_data["verification_details"] = {"error": "Fraud detection failed."}
+
+        # Store user profile in Firestore
+        user_doc_ref = firestore_db.collection("users").document(uid)
+        user_doc_ref.set(user_data, merge=True) # Use merge to avoid overwriting existing fields if any
+
+        # Create our custom JWT
+        jwt_manager = get_jwt_manager()
+        access_token = jwt_manager.create_access_token(user_data)
+        refresh_token = jwt_manager.create_refresh_token(uid)
+
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=jwt_manager.expiration_hours * 3600,
+            refresh_token=refresh_token,
+            user_info=UserInfo(**user_data)
+        )
+
+    except auth.InvalidIdTokenError as e:
+        logger.error(f"Invalid Firebase ID token during registration: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Firebase ID token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except auth.UserNotFoundError:
+        logger.error(f"Firebase user not found for provided ID token during registration.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Firebase user not found. Please ensure you've signed up with Firebase Auth first."
+        )
     except Exception as e:
-        logger.error(f"Error in /register endpoint: {e}", exc_info=True)
+        logger.error(f"Error during registration: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error during registration.")
 
+@app.post("/update_profile", response_model=UserInfo)
+async def update_user_profile(
+    request: UserProfileUpdateRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user), # Our custom JWT provides user info
+    firestore_db: firestore.Client = Depends(get_firestore_client)
+):
+    """Update user profile in Firestore."""
+    uid = current_user.get("id") # 'id' field in our custom JWT payload is the Firebase UID
+    if not uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User ID not found in token.")
 
-@app.post("/update_profile")
-async def update_profile(request: UpdateProfileRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Update user profile with additional details."""
-    try:
-        if not db:
-            raise HTTPException(status_code=503, detail="Database service not available.")
+    user_doc_ref = firestore_db.collection("users").document(uid)
+    user_doc = user_doc_ref.get()
 
-        user_id = current_user.get("id")
-        user_email = current_user.get("email")
-        logger.info(f"Updating profile for user: {user_id} ({user_email}) with type: {request.user_type}")
+    if not user_doc.exists:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
 
-        user_ref = db.collection("users").document(user_email)
+    update_data = request.dict(exclude_unset=True) # Get only fields that were explicitly set in the request
 
-        update_data = request.model_dump(exclude_unset=True)  # Only include fields that were set in the request
-        # Remove user_type from update_data as it's not meant to be changed directly via update
-        update_data.pop('user_type', None)
-
-        if not update_data:
-            raise HTTPException(status_code=400, detail="No data provided for update.")
-
-        await user_ref.update(update_data)
-        logger.info(f"User {user_email} profile updated in Firestore with: {update_data}")
-
-        return {
-            "message": "Profile updated successfully",
-            "user_id": user_id,
-            "updated_fields": update_data
+    # Special handling for organization data if user_type is organization
+    if request.user_type == "organization":
+        org_data_for_fraud_check = {
+            'org_name': update_data.get('organization_name', current_user.get('organization_name')),
+            'bio': update_data.get('description', current_user.get('description')),
+            'pan': update_data.get('pan', current_user.get('pan')),
+            'ngo_darpan_id': update_data.get('ngo_darpan_id', current_user.get('ngo_darpan_id')),
+            'fcra_number': update_data.get('fcra_number', current_user.get('fcra_number')),
+            'recent_posts': '', # Placeholder
+            'follower_count': 0, # Placeholder
+            'post_count': 0, # Placeholder
+            'account_age_days': 0, # Placeholder
+            'engagement_rate': 0.0 # Placeholder
         }
-    except HTTPException:
-        raise
+        try:
+            ngo_darpan_csv_path = BASE_DIR / "DEhli.csv"
+            load_ngo_darpan_data(str(ngo_darpan_csv_path)) # Ensure data is loaded
+            fraud_score, explanation, plot_path, verification_details = predict_fraud(
+                org_data_for_fraud_check, api_key_trustcheckr=os.getenv("TRUSTCHECKR_API_KEY", "mock_key")
+            )
+            update_data["is_fraudulent"] = fraud_score > 0.5
+            update_data["fraud_score"] = fraud_score
+            update_data["fraud_explanation"] = explanation
+            update_data["verification_details"] = verification_details
+            logger.info(f"Fraud detection re-run for organization {uid} during profile update. Score: {fraud_score:.2f}")
+        except Exception as e:
+            logger.error(f"Fraud detection failed during profile update for organization {uid}: {e}", exc_info=True)
+            update_data["is_fraudulent"] = None
+            update_data["fraud_score"] = None
+            update_data["fraud_explanation"] = "Fraud detection service unavailable."
+            update_data["verification_details"] = {"error": "Fraud detection failed."}
+
+    try:
+        user_doc_ref.update(update_data)
+        updated_user_doc = user_doc_ref.get()
+        return UserInfo(**updated_user_doc.to_dict())
     except Exception as e:
-        logger.error(f"Error in /update_profile endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error during profile update.")
+        logger.error(f"Error updating user profile for UID {uid}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update user profile.")
 
 
 @app.post("/create_campaign")
-async def create_campaign(request: CreateCampaignRequest, current_user: UserInfo = Depends(get_current_user)):
-    """Endpoint to create a new campaign."""
+async def create_campaign(
+    request: CampaignCreateRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    firestore_db: firestore.Client = Depends(get_firestore_client)
+):
+    """Create a new campaign."""
+    user_uid = current_user.get("id")
+    user_type = current_user.get("user_type")
+
+    if user_type != "organization":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only organization accounts can create campaigns."
+        )
+
+    # Fetch organization name to use as author
+    organization_name = current_user.get("organization_name", "N/A")
+    if organization_name == "N/A":
+        # Try to fetch from Firestore if not in current_user (e.g., if token is old)
+        org_doc = firestore_db.collection("users").document(user_uid).get()
+        if org_doc.exists:
+            organization_name = org_doc.to_dict().get("organization_name", "N/A")
+
+    campaign_data = {
+        "user_uid": user_uid,
+        "campaign_name": request.campaign_name,
+        "description": request.description,
+        "goal": request.goal,
+        "funded": 0.0, # Start with 0 funded
+        "category": request.category,
+        "image_base64": request.image_base64, # Store base64 for now, ideally upload to storage
+        "author": organization_name,
+        "created_at": firestore.SERVER_TIMESTAMP,
+        "last_updated": firestore.SERVER_TIMESTAMP,
+        "status": "active",
+        "days_left": 60, # Default days left for new campaigns
+        "verification_status": "Pending" # New campaigns are pending verification
+    }
+
     try:
-        if not db:
-            raise HTTPException(status_code=503, detail="Database service not available.")
-
-        if current_user.user_type != "organization":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only organization users can create campaigns."
-            )
-
-        logger.info(f"Organization user {current_user.email} is creating a campaign.")
-
-        campaign_data = {
-            "organization_email": current_user.email,
-            "campaign_name": request.campaign_name,
-            "description": request.description,
-            "goal": request.goal,
-            "category": request.category,
-            "funded": 0,
-            "status": "pending",
-            "created_at": firestore.SERVER_TIMESTAMP
-        }
-
-        campaign_image_url = None
-        if request.image_base64:
-            # In a real application, you would save this image to cloud storage (e.g., Google Cloud Storage, AWS S3)
-            # and store the URL in your database. For this example, we'll just acknowledge its presence.
-            logger.info(f"Received image for campaign (size: {len(request.image_base64)} bytes). "
-                        "Saving image to cloud storage is recommended for production.")
-            # Placeholder for image URL, in a real scenario this would be the URL from cloud storage
-            campaign_image_url = f"https://placehold.co/600x400/000000/FFFFFF?text={request.campaign_name.replace(' ', '+')}"
-
-        campaign_data["image_url"] = campaign_image_url
-
-        campaign_ref = db.collection("campaigns").document()  # Auto-generate document ID
-        await campaign_ref.set(campaign_data)
-
-        logger.info(f"Campaign '{request.campaign_name}' created by {current_user.email} and saved to Firestore.")
-
-        return {
-            "message": "Campaign created successfully!",
-            "campaign_id": campaign_ref.id,
-            "campaign_name": request.campaign_name,
-            "status": "success"
-        }
-    except HTTPException:
-        raise
+        doc_ref = await firestore_db.collection("campaigns").add(campaign_data)
+        logger.info(f"Campaign '{request.campaign_name}' created by {user_uid} with ID: {doc_ref.id}")
+        return {"message": "Campaign created successfully!", "campaign_id": doc_ref.id}
     except Exception as e:
-        logger.error(f"Error creating campaign: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error during campaign creation.")
+        logger.error(f"Error creating campaign for user {user_uid}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create campaign.")
 
 
 @app.get("/campaigns")
-async def get_campaigns():
-    """Get all campaigns."""
+async def get_campaigns(firestore_db: firestore.Client = Depends(get_firestore_client)):
+    """Get all campaigns from Firestore."""
     try:
-        if not db:
-            return []  # Return empty list if DB not available
-
-        campaigns_ref = db.collection("campaigns")
-        docs = await campaigns_ref.stream()
-
-        campaign_list = []
-        # Use a list comprehension to await all documents
-        # Note: 'await' inside a list comprehension requires Python 3.9+ or specific async libraries.
-        # For broader compatibility, an explicit loop is safer.
+        campaigns_ref = firestore_db.collection("campaigns")
+        docs = campaigns_ref.stream()
+        campaigns_list = []
         for doc in docs:
             campaign_data = doc.to_dict()
-            campaign_list.append({
-                "id": doc.id,
-                "name": campaign_data.get("campaign_name", "N/A"),
-                "description": campaign_data.get("description", "N/A"),
-                "author": campaign_data.get("organization_email", "N/A"),  # Assuming author is the organization email
-                "funded": campaign_data.get("funded", 0),
-                "goal": campaign_data.get("goal", 1),  # Avoid division by zero
-                # Calculate days_left based on created_at (if available) or mock it
-                "days_left": round((campaign_data.get("created_at").timestamp() + (30 * 24 * 3600) - time.time()) / (
-                            24 * 3600)) if campaign_data.get("created_at") else 30,
-                "category": campaign_data.get("category", "N/A"),
-                "verification_status": campaign_data.get("status", "pending"),
-                "image_url": campaign_data.get("image_url", "https://via.placeholder.com/600x400")
-            })
+            campaign_data["id"] = doc.id
+            # Generate a placeholder image URL if image_base664 is not present
+            if 'image_base64' in campaign_data and campaign_data['image_base64']:
+                # In a real app, you'd upload this to a storage service (e.g., Firebase Storage)
+                # and store the URL. For now, we'll use a data URL for direct display.
+                # However, data URLs can be very long and are not ideal for large images or production.
+                # For this demo, we'll just return a placeholder.
+                campaign_data['image_url'] = "https://placehold.co/600x400/4CAF50/ffffff?text=Campaign+Image"
+            else:
+                campaign_data['image_url'] = "https://placehold.co/600x400/4CAF50/ffffff?text=No+Image"
 
-        # Add mock campaigns if no real campaigns or for demonstration
-        if not campaign_list:
-            mock_campaigns = [
-                {
-                    "id": "mock1",
-                    "name": "Sustainable Farming Initiative",
-                    "description": "Support local farmers in adopting sustainable practices.",
-                    "author": "Green Earth Foundation",
-                    "funded": 75000,
-                    "goal": 100000,
-                    "days_left": 30,
-                    "category": "Environment",
-                    "verification_status": "Verified",
-                    "image_url": "https://via.placeholder.com/600x400"
-                },
-                {
-                    "id": "mock2",
-                    "name": "Clean Water Project",
-                    "description": "Provide access to clean and safe drinking water.",
-                    "author": "Water for All",
-                    "funded": 50000,
-                    "goal": 80000,
-                    "days_left": 45,
-                    "category": "Health",
-                    "verification_status": "Verified",
-                    "image_url": "https://via.placeholder.com/600x400"
-                },
-                {
-                    "id": "mock3",
-                    "name": "Education for All",
-                    "description": "Fund educational resources for underprivileged children.",
-                    "author": "Education First",
-                    "funded": 30000,
-                    "goal": 60000,
-                    "days_left": 60,
-                    "category": "Education",
-                    "verification_status": "Verified",
-                    "image_url": "https://via.placeholder.com/600x400"
-                }
-            ]
-            campaign_list.extend(mock_campaigns)
-
-        return campaign_list
+            campaigns_list.append(campaign_data)
+        return campaigns_list
     except Exception as e:
         logger.error(f"Error in /campaigns endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error fetching campaigns.")
@@ -724,10 +726,11 @@ async def get_campaigns():
 # Firebase initialization
 def initialize_firebase():
     """Ultra robust Firebase initialization with multiple fallback strategies"""
-    global db
+    global db, firebase_auth
 
     logger.info("Starting ultra robust Firebase initialization...")
 
+    # Attempt 1: From service account JSON file
     firebase_key_file_paths = [
         BASE_DIR / "firebase-service-account-key.json",
         "/app/firebase-service-account-key.json",
@@ -741,7 +744,6 @@ def initialize_firebase():
             key_path = Path(key_file_path)
             if key_path.exists():
                 logger.info(f"Found Firebase service account key file at: {key_file_path}")
-
                 with open(key_path, 'r', encoding='utf-8') as f:
                     json_content = json.load(f)
 
@@ -751,6 +753,7 @@ def initialize_firebase():
                     if not firebase_admin._apps:
                         firebase_admin.initialize_app(cred)
                     db = firestore.client()
+                    firebase_auth = auth.get_auth()
                     logger.info("Firebase Admin SDK initialized successfully from file.")
                     return True
                 else:
@@ -763,11 +766,12 @@ def initialize_firebase():
             logger.warning(f"Failed to initialize Firebase from file {key_file_path}: {e}")
             continue
 
-    firebase_key = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
-    if firebase_key:
+    # Attempt 2: From base64 encoded environment variable
+    firebase_key_base64 = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
+    if firebase_key_base64:
         try:
-            firebase_key = firebase_key.strip()
-            decoded_bytes = base64.b64decode(firebase_key)
+            firebase_key_base64 = firebase_key_base64.strip()
+            decoded_bytes = base64.b64decode(firebase_key_base64)
             decoded_string = decoded_bytes.decode("utf-8")
             service_account_info = json.loads(decoded_string)
 
@@ -777,6 +781,7 @@ def initialize_firebase():
                 if not firebase_admin._apps:
                     firebase_admin.initialize_app(cred)
                 db = firestore.client()
+                firebase_auth = auth.get_auth()
                 logger.info("Firebase Admin SDK initialized successfully from environment variable.")
                 return True
             else:
@@ -791,25 +796,28 @@ def initialize_firebase():
         except Exception as e:
             logger.error(f"Unexpected error with environment variable Firebase key: {e}")
 
+    # Attempt 3: Application Default Credentials (for Google Cloud environments)
     try:
         logger.info("Attempting ApplicationDefault credentials...")
         cred = credentials.ApplicationDefault()
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred)
         db = firestore.client()
+        firebase_auth = auth.get_auth()
         logger.info("Firebase Admin SDK initialized successfully with ApplicationDefault credentials.")
         return True
     except Exception as e:
         logger.warning(f"ApplicationDefault credentials failed: {e}")
 
-    logger.warning("All Firebase initialization strategies failed. Running in degraded mode.")
+    logger.critical("All Firebase initialization strategies failed. Running in degraded mode without Firebase.")
     db = None
+    firebase_auth = None
     return False
 
 
 @app.on_event("startup")
 async def startup_event():
-    global db, algolia_client, algolia_index
+    global db, firebase_auth, algolia_client, algolia_index
 
     logger.info("Application startup event triggered.")
 
@@ -824,7 +832,12 @@ async def startup_event():
         for var, description in missing_optional:
             logger.warning(f"Optional variable {var} not set - {description} may be limited")
 
-    # Initialize OAuth configuration
+    # Initialize Firebase
+    firebase_initialized = initialize_firebase()
+    if not firebase_initialized:
+        logger.warning("Firebase not fully initialized. Some features may not work.")
+
+    # Initialize OAuth configuration (now uses env_config to get redirect URIs)
     oauth_config = get_oauth_config()
     if oauth_config.is_configured:
         logger.info("OAuth configuration loaded successfully")
@@ -834,14 +847,6 @@ async def startup_event():
             logger.info("✓ Facebook OAuth configured")
     else:
         logger.warning("No OAuth providers configured - OAuth functionality will be disabled")
-
-    try:
-        firebase_success = initialize_firebase()
-        if not firebase_success:
-            logger.warning("Firebase initialization failed, but continuing with degraded functionality")
-    except Exception as e:
-        logger.error(f"Unexpected error during Firebase initialization: {e}", exc_info=True)
-        db = None
 
     try:
         logger.info("Attempting Algolia client initialization...")
@@ -887,9 +892,7 @@ async def startup_event():
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
-
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
