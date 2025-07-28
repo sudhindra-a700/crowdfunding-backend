@@ -46,29 +46,50 @@ def setup_logging():
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     log_format = os.environ.get("LOG_FORMAT", "json")
 
+    # Clear existing handlers to prevent re-adding them on reload/rerun
+    # This is crucial for Streamlit or similar environments that might re-run startup code
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    for handler in logging.getLogger(__name__).handlers[:]:
+        logging.getLogger(__name__).removeHandler(handler)
+
+
     if log_format.lower() == "json":
         import json
         import datetime
 
         class JSONFormatter(logging.Formatter):
             def format(self, record):
-                log_entry = {
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                    "level": record.levelname,
-                    "logger": record.name,
-                    "message": record.getMessage(),
-                    "module": record.module,
-                    "function": record.funcName,
-                    "line": record.lineno
-                }
-                if record.exc_info:
-                    log_entry["exception"] = self.formatException(record.exc_info)
-                return json.dumps(log_entry)
+                try:
+                    log_entry = {
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
+                        "level": record.levelname,
+                        "logger": record.name,
+                        "message": record.getMessage(),
+                        "module": record.module,
+                        "function": record.funcName,
+                        "line": record.lineno
+                    }
+                    if record.exc_info:
+                        log_entry["exception"] = self.formatException(record.exc_info)
+                    return json.dumps(log_entry)
+                except Exception as e:
+                    # Fallback to a simpler format if JSON formatting fails
+                    return f"ERROR: Could not format log record to JSON: {e} - Original message: {record.getMessage()}"
 
-        handler = logging.StreamHandler()
+            # Override handleError to prevent reentrant calls
+            def handleError(self, record):
+                """
+                Do not call sys.stderr.write directly to avoid reentrant calls.
+                Instead, let the default logging system handle it, or just pass.
+                """
+                pass # Suppress default error handling for this formatter
+
+
+        handler = logging.StreamHandler(sys.stdout) # Use stdout for JSON logs
         handler.setFormatter(JSONFormatter())
     else:
-        handler = logging.StreamHandler()
+        handler = logging.StreamHandler(sys.stdout) # Use stdout for standard logs
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
         )
@@ -77,11 +98,17 @@ def setup_logging():
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
         handlers=[handler],
-        force=True
+        force=True, # Ensure configuration is applied
+        disable_existing_loggers=False # Do not disable existing loggers (like Gunicorn's)
     )
 
+    # Set specific log levels for common libraries to reduce verbosity
     logging.getLogger("uvicorn").setLevel(logging.INFO)
     logging.getLogger("fastapi").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING) # Reduce noise from HTTP requests
+    logging.getLogger("httpcore").setLevel(logging.WARNING) # Reduce noise from HTTP requests
+    logging.getLogger("firebase_admin").setLevel(logging.INFO) # Keep Firebase info
+    logging.getLogger("authlib").setLevel(logging.INFO) # Keep Authlib info
 
     return logging.getLogger(__name__)
 
@@ -330,7 +357,6 @@ async def health_check():
                 test_doc_ref = db.collection("health_check").document("test")
                 test_doc_ref.set({"timestamp": time.time()}, merge=True)
                 # Test Firebase Auth (e.g., get a dummy user, though not ideal for health check)
-                # For a real check, you might attempt to get a non-existent user or list users (if permissions allow)
                 # For simplicity, we'll just check if the client objects exist
                 health_status["services"]["firebase"] = "connected"
             else:
@@ -622,7 +648,7 @@ async def update_user_profile(
         }
         try:
             ngo_darpan_csv_path = BASE_DIR / "DEhli.csv"
-            load_ngo_darpan_data(str(ngo_darpan_csv_path)) # Ensure data is loaded
+            load_ngo_darpan_data(ngo_darpan_csv_path) # Ensure data is loaded
             fraud_score, explanation, plot_path, verification_details = predict_fraud(
                 org_data_for_fraud_check, api_key_trustcheckr=os.getenv("TRUSTCHECKR_API_KEY", "mock_key")
             )
