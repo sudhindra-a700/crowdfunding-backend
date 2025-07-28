@@ -101,6 +101,9 @@ USER appuser
 # Expose the port that Gunicorn will run on internally
 EXPOSE 8000
 
+# Explicitly set the PORT environment variable for deployment platforms
+ENV PORT=8000
+
 # Add a HEALTHCHECK to help cloud platforms monitor the container
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
   CMD curl --fail http://localhost:8000/health || exit 1
@@ -108,5 +111,3 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
 # Command to run the FastAPI application using Gunicorn with Uvicorn workers
 # It listens on all network interfaces (0.0.0.0) on the exposed port 8000
 CMD ["gunicorn", "app:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100"]
-
-
