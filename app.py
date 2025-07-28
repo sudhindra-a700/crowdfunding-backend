@@ -222,6 +222,29 @@ class OrganizationProfileData(BaseModel):
     pan: Optional[str] = None
     fcra_number: Optional[str] = None
 
+# New Pydantic models for RegisterRequest and UserProfileUpdateRequest
+class RegisterRequest(BaseModel):
+    id_token: str
+    user_type: str
+    individual_data: Optional[IndividualProfileData] = None
+    organization_data: Optional[OrganizationProfileData] = None
+
+class UserProfileUpdateRequest(BaseModel):
+    # Allow partial updates by making all fields optional
+    user_type: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    organization_name: Optional[str] = None
+    organization_type: Optional[str] = None
+    description: Optional[str] = None
+    ngo_darpan_id: Optional[str] = None
+    pan: Optional[str] = None
+    fcra_number: Optional[str] = None
+
+
 class CampaignCreateRequest(BaseModel):
     campaign_name: str
     description: str
@@ -924,4 +947,3 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
