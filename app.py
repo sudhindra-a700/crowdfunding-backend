@@ -275,7 +275,7 @@ app.add_middleware(
 
 # Global Firebase instances - initialized in startup_event
 db: Optional[firestore.Client] = None
-firebase_auth: Optional[auth.Auth] = None # Keep this as auth.Auth for consistency, will fix in other files
+firebase_auth = None  # Firebase auth module - no specific type needed as it's a module
 algolia_client = None
 algolia_index = None
 
@@ -287,7 +287,7 @@ def get_firestore_client() -> firestore.Client:
     return db
 
 # Dependency to get Firebase Auth client
-def get_firebase_auth() -> auth.Auth: # Keep auth.Auth here
+def get_firebase_auth():  # Firebase auth module - no specific type needed
     if firebase_auth is None:
         raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
     return firebase_auth
