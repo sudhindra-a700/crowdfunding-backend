@@ -395,6 +395,7 @@ async def health_check():
         if env_config.is_required_missing():
             critical_issues.extend([f"Missing required env var: {var}" for var, _ in env_config.get_missing_required()])
 
+        # If Firebase is not initialized, it's a critical issue for this app
         if not db or not firebase_auth:
             critical_issues.append("Firebase not initialized")
 
@@ -864,9 +865,8 @@ async def startup_event():
     logger.info("Attempting Firebase initialization...")
     firebase_initialized = initialize_firebase()
     if not firebase_initialized:
-        logger.critical("Firebase not fully initialized. Some features will not work.")
-        # If Firebase is critical for your app, you might want to exit here
-        # sys.exit(1)
+        logger.critical("Firebase not fully initialized. Exiting application.")
+        sys.exit(1) # Exit if Firebase initialization fails
 
     # Initialize OAuth configuration (now uses env_config to get redirect URIs)
     oauth_config = get_oauth_config()
