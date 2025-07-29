@@ -67,7 +67,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Create non-root user for security
+# Create non-root user for security (MOVED UP)
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Set Hugging Face and Matplotlib cache directories and create them with appuser permissions
