@@ -22,20 +22,23 @@ warnings.filterwarnings("ignore")
 # Initialize as None, to be loaded lazily
 model = None
 tokenizer = None
-ngo_darpan_data = None
-
-# Define device (global but set on first model load)
+ngo_darpan_data = None # This will hold the DataFrame
 DEVICE = "cpu"  # Default to CPU. Will be updated if CUDA is available.
 
 # Define model output directory
 MODEL_OUTPUT_DIR = "./distilbert-fraud-finetuned"
 BASE_MODEL_NAME = "distilbert-base-uncased"
 
+# Determine the base directory for data files
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+NGO_DARPAN_CSV_PATH = os.path.join(BASE_DIR, "DEhli.csv")
+NGO_FRAUD_CSV_PATH = os.path.join(BASE_DIR, "ngo_fraud.csv")
 
 def load_fraud_detection_model():
     """
     Loads the fine-tuned fraud detection model and tokenizer.
     If not found, loads the base model. This function is designed for lazy loading.
+    It will only load if the global 'model' is None.
     """
     global model, tokenizer, DEVICE
 
@@ -72,6 +75,7 @@ def load_ngo_darpan_data(file_path: str):
     """
     Loads NGO Darpan data from a CSV file into a pandas DataFrame.
     Caches the DataFrame for subsequent calls. This function is designed for lazy loading.
+    It will only load if the global 'ngo_darpan_data' is None.
     """
     global ngo_darpan_data
     if ngo_darpan_data is None:
@@ -79,7 +83,7 @@ def load_ngo_darpan_data(file_path: str):
         try:
             if not os.path.exists(file_path):
                 print(f"Warning: NGO Darpan data file not found at {file_path}. NGO Darpan lookup will be unavailable.")
-                ngo_darpan_data = pd.DataFrame()
+                ngo_darpan_data = pd.DataFrame() # Set to empty DataFrame to avoid None
                 return ngo_darpan_data
 
             ngo_darpan_data = pd.read_csv(file_path)
@@ -91,18 +95,19 @@ def load_ngo_darpan_data(file_path: str):
     return ngo_darpan_data
 
 
-def search_ngo_darpan_csv(ngo_darpan_id: str, file_path: str) -> dict:
+def search_ngo_darpan_csv(ngo_darpan_id: str) -> dict:
     """
     Searches the loaded NGO Darpan CSV data for a given NGO Darpan ID.
     Returns a dictionary of relevant details if found, otherwise an empty dict.
-    Ensures data is loaded via load_ngo_darpan_data.
+    Assumes ngo_darpan_data is already loaded globally.
     """
-    df = load_ngo_darpan_data(file_path)  # Ensure data is loaded
-    if df.empty or 'Unique ID of VO/ NGO' not in df.columns:
+    global ngo_darpan_data
+    if ngo_darpan_data is None or ngo_darpan_data.empty or 'Unique ID of VO/ NGO' not in ngo_darpan_data.columns:
+        print("Warning: NGO Darpan data not loaded or empty. Cannot perform search.")
         return {}
 
     search_id = str(ngo_darpan_id).strip()
-    result = df[df['Unique ID of VO/ NGO'].astype(str).str.strip() == search_id]
+    result = ngo_darpan_data[ngo_darpan_data['Unique ID of VO/ NGO'].astype(str).str.strip() == search_id]
 
     if not result.empty:
         return result.iloc[0].to_dict()
@@ -124,7 +129,7 @@ class FraudDataset(torch.utils.data.Dataset):
         return len(self.labels)
 
 
-def fine_tune_model(dataset_path: str = "ngo_fraud.csv", k_folds: int = 1):
+def fine_tune_model(dataset_path: str = NGO_FRAUD_CSV_PATH, k_folds: int = 1):
     """
     Fine-tunes the DistilBERT model for fraud detection.
     Uses k-fold cross-validation. Only runs if fine-tuned model is not found.
@@ -224,10 +229,14 @@ def predict_fraud(organization_data: dict, api_key_trustcheckr: Optional[str] = 
     Integrates with mock TrustCheckr and other verification services, including NGO Darpan CSV lookup.
     Returns fraud_score, explanation, plot_path, and verification_details.
     """
-    global model, tokenizer  # Ensure global model/tokenizer are used
+    global model, tokenizer, ngo_darpan_data # Ensure global model/tokenizer/data are used
 
-    # Ensure model is loaded before prediction
+    # Ensure model is loaded before prediction (this call will only load if model is None)
     load_fraud_detection_model()
+
+    # If model is still None after attempting to load, raise an error
+    if model is None or tokenizer is None:
+        raise RuntimeError("Fraud detection model is not loaded. Cannot perform prediction.")
 
     text = organization_data.get('recent_posts', '') + " " + organization_data.get('bio',
                                                                                    '') + " " + organization_data.get(
@@ -279,9 +288,13 @@ def predict_fraud(organization_data: dict, api_key_trustcheckr: Optional[str] = 
         plot_path = "/static/dummy_shap_plot.png"  # Fallback placeholder for web access
 
     # --- Verification Details (based on provided data and NGO Darpan lookup) ---
-    # Ensure NGO Darpan data is loaded before search
-    ngo_darpan_file_path = os.path.join(os.path.dirname(__file__), "DEhli.csv")  # Absolute path for DEhli.csv
-    load_ngo_darpan_data(ngo_darpan_file_path)  # Load if not already loaded
+    # Ensure NGO Darpan data is loaded before search (this call will only load if ngo_darpan_data is None)
+    load_ngo_darpan_data(NGO_DARPAN_CSV_PATH) # Use the global path
+
+    # If NGO Darpan data is still None/empty after attempting to load, handle gracefully
+    if ngo_darpan_data is None or ngo_darpan_data.empty:
+        print("Warning: NGO Darpan data not available for lookup.")
+
 
     verification_details = {
         'org_name': organization_data.get('org_name', 'N/A'),
@@ -299,7 +312,8 @@ def predict_fraud(organization_data: dict, api_key_trustcheckr: Optional[str] = 
 
     # Perform NGO Darpan lookup
     if organization_data.get('ngo_darpan_id'):
-        darpan_details = search_ngo_darpan_csv(organization_data['ngo_darpan_id'], ngo_darpan_file_path)
+        # Call search_ngo_darpan_csv without passing file_path, as data is global
+        darpan_details = search_ngo_darpan_csv(organization_data['ngo_darpan_id'])
         if darpan_details:
             verification_details['ngo_darpan_lookup_status'] = 'Found in CSV'
             verification_details['ngo_darpan_details'] = darpan_details
@@ -331,6 +345,9 @@ def predict_fraud(organization_data: dict, api_key_trustcheckr: Optional[str] = 
 
     return fraud_score, explanation, plot_path, verification_details
 
+# --- Removed module-level loading to prevent startup issues ---
+# The model and data will now be loaded lazily via calls within predict_fraud.
+
 
 if __name__ == "__main__":
     # For local testing, ensure paths are correct
@@ -339,9 +356,11 @@ if __name__ == "__main__":
     ngo_fraud_test_path = os.path.join(current_script_dir, "ngo_fraud.csv")
 
     # Fine-tune model (only if not already fine-tuned)
+    # This will use the pre-loaded model/tokenizer if available, or load base.
+    # If fine-tuning is needed, it will save to MODEL_OUTPUT_DIR.
     fine_tune_model(dataset_path=ngo_fraud_test_path, k_folds=1)  # Reduced folds for quicker local test
 
-    # Example prediction (will trigger lazy loading)
+    # Example prediction (will use the pre-loaded model/data)
     sample_org_legit = {
         'org_name': 'Shiksha Foundation',
         'bio': 'Dedicated to providing education for underprivileged children in rural India.',
@@ -383,4 +402,3 @@ if __name__ == "__main__":
     print(f"Explanation: {explanation}")
     print(f"SHAP Plot Path: {plot_path}")
     print(f"Verification: {json.dumps(verification, indent=2)}")
-
