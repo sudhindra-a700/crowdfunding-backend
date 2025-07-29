@@ -18,11 +18,14 @@ import base64
 import secrets
 
 from typing import Optional, List, Dict, Any, Union
+
+# Import Auth for type hinting the auth client itself, not auth.Auth
+from firebase_admin import auth
 from pydantic import BaseModel, Field
 
 # Firebase Admin SDK imports
 import firebase_admin
-from firebase_admin import credentials, auth, firestore, messaging
+from firebase_admin import credentials, firestore, messaging
 
 # OAuth imports
 from oauth_routes import get_oauth_router
@@ -271,7 +274,7 @@ app.add_middleware(
 
 # Global Firebase instances - initialized in startup_event
 db: Optional[firestore.Client] = None
-firebase_auth: Optional[auth.Auth] = None
+firebase_auth: Optional[auth.Auth] = None # Keep this as auth.Auth for consistency, will fix in other files
 algolia_client = None
 algolia_index = None
 
@@ -283,8 +286,7 @@ def get_firestore_client() -> firestore.Client:
     return db
 
 # Dependency to get Firebase Auth client
-def get_firebase_auth() -> auth.Auth:
-    # FIX: Changed '===' to 'is' for Python comparison
+def get_firebase_auth() -> auth.Auth: # Keep auth.Auth here
     if firebase_auth is None:
         raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
     return firebase_auth
