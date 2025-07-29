@@ -70,6 +70,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
+# Set Hugging Face cache directory and create it with appuser permissions
+ENV HF_HOME=/app/.cache/huggingface
+RUN mkdir -p ${HF_HOME} && chown -R appuser:appuser ${HF_HOME}
+
 # Copy the main application files
 COPY --chown=appuser:appuser app.py .
 COPY --chown=appuser:appuser fraud_detection.py .
