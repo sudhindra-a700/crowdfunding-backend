@@ -95,7 +95,8 @@ def setup_logging():
         level=getattr(logging, log_level, logging.INFO),
         handlers=[handler],
         force=True,
-        disable_existing_loggers=False
+        # The 'disable_existing_loggers' argument is removed as it causes ValueError in some Python versions.
+        # Its functionality is largely covered by 'force=True' and explicit handler management.
     )
 
     logging.getLogger("uvicorn").setLevel(logging.INFO)
@@ -337,7 +338,7 @@ def initialize_firebase():
 
                 required_fields = ['type', 'project_id', 'private_key', 'client_email']
                 if all(field in json_content for field in required_fields):
-                    cred = credentials.Certificate(str(key_file_path))
+                    cred = credentials.Certificate(service_account_info=json_content) # Pass dict directly
                     if not firebase_admin._apps:
                         firebase_admin.initialize_app(cred)
                     db = firestore.client()
@@ -364,7 +365,7 @@ def initialize_firebase():
 
             required_fields = ['type', 'project_id', 'private_key', 'client_email']
             if all(field in service_account_info for field in required_fields):
-                cred = credentials.Certificate(service_account_info)
+                cred = credentials.Certificate(service_account_info=service_account_info) # Pass dict directly
                 if not firebase_admin._apps:
                     firebase_admin.initialize_app(cred)
                 db = firestore.client()
