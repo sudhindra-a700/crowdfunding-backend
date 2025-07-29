@@ -879,27 +879,9 @@ async def startup_event():
     else:
         logger.warning("No OAuth providers configured - OAuth functionality will be disabled")
 
-    # Initialize Fraud Detection model and data
-    try:
-        logger.info("Attempting to load fraud detection model...")
-        load_fraud_detection_model()
-        logger.info("Fraud detection model loaded successfully.")
-    except RuntimeError as e:
-        logger.critical(f"CRITICAL: Fraud detection model failed to load: {e}. Fraud detection will be unavailable.", exc_info=True)
-    except Exception as e:
-        logger.critical(f"UNEXPECTED ERROR: Fraud detection model loading failed: {e}.", exc_info=True)
-
-    try:
-        logger.info("Attempting to load NGO Darpan data...")
-        ngo_darpan_csv_path = BASE_DIR / "DEhli.csv"
-        load_ngo_darpan_data(str(ngo_darpan_csv_path))
-        logger.info("NGO Darpan data loaded successfully.")
-    except RuntimeError as e:
-        logger.critical(f"CRITICAL: NGO Darpan data failed to load: {e}. NGO Darpan lookup will be unavailable.", exc_info=True)
-    except Exception as e:
-        logger.critical(f"UNEXPECTED ERROR: NGO Darpan data loading failed: {e}.", exc_info=True)
-
-
+    # Removed explicit loading of fraud detection model and NGO Darpan data from startup.
+    # These are now expected to be loaded on demand by the fraud_detection module
+    # when predict_fraud is called. This reduces startup memory footprint.
     try:
         logger.info("Attempting Algolia client initialization...")
         if ALGOLIA_AVAILABLE:
