@@ -97,8 +97,9 @@ COPY --chown=appuser:appuser jwt_utils.py .
 COPY --chown=appuser:appuser DEhli.csv .
 COPY --chown=appuser:appuser ngo_fraud.csv .
 
-# Optionally copy Firebase service account key (if it exists)
-COPY --chown=appuser:appuser firebase-service-account-key.json ./firebase-service-account-key.json 2>/dev/null || echo "No Firebase key file found, using environment variable fallback"
+# Optionally copy Firebase service account key
+COPY --chown=appuser:appuser firebase-service-account-key.json ./firebase-service-account-key.json || \
+RUN echo "No Firebase key file found, using environment variable fallback" > /dev/null
 
 # Copy static directory if it exists
 COPY --chown=appuser:appuser static/ ./static/
@@ -121,5 +122,5 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
   CMD curl --fail http://localhost:8000/health || exit 1
 
 # Command to run the FastAPI application using Gunicorn with Uvicorn workers
-# Avoid preloading by not using --preload (default behavior changed to lazy loading)
-CMD ["gunicorn", "app:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100"]
+# Explicitly disable preloading and add logging for debugging
+CMD ["gunicorn", "app:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100", "--log-level", "debug"]
