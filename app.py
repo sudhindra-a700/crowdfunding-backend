@@ -26,10 +26,10 @@ from pydantic import BaseModel, Field
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 
-# OAuth imports
-from oauth_routes import get_oauth_router
-from oauth_config import get_oauth_config
-from jwt_utils import get_jwt_manager
+# OAuth imports (delayed to avoid circular issues)
+# from oauth_routes import get_oauth_router  # Moved to startup_event
+# from oauth_config import get_oauth_config  # Moved to startup_event
+# from jwt_utils import get_jwt_manager      # Moved to startup_event
 
 # Import fraud detection module (only import, no direct calls here)
 from fraud_detection import predict_fraud, load_ngo_darpan_data, load_fraud_detection_model, fine_tune_model
@@ -108,6 +108,9 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 logger = setup_logging()
+
+# Module-level check for HTTPBearer
+logger.debug(f"Checking HTTPBearer availability: {HTTPBearer is not None}")
 
 class EnvironmentConfig:
     def __init__(self):
@@ -289,27 +292,33 @@ def get_firebase_auth():  # Firebase auth module - no specific type needed
     return firebase_auth
 
 # Dependency to get current user from our custom JWT
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
-) -> Dict[str, Any]:
-    """Get current user from our custom JWT token"""
-    logger.debug("Entering get_current_user function")
-    jwt_manager = get_jwt_manager()
-    try:
-        user_data = jwt_manager.get_user_from_token(credentials.credentials)
-        if "id" not in user_data:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
-        logger.debug(f"Successfully retrieved user data: {user_data}")
-        return user_data
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get current user from JWT: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
+try:
+    async def get_current_user(
+        credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+    ) -> Dict[str, Any]:
+        """Get current user from our custom JWT token"""
+        logger.debug("Entering get_current_user function")
+        # Lazy import of jwt_manager to avoid circular issues
+        from jwt_utils import get_jwt_manager
+        jwt_manager = get_jwt_manager()
+        try:
+            user_data = jwt_manager.get_user_from_token(credentials.credentials)
+            if "id" not in user_data:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
+            logger.debug(f"Successfully retrieved user data: {user_data}")
+            return user_data
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get current user from JWT: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication credentials",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+except NameError as e:
+    logger.critical(f"Failed to define get_current_user due to: {e}", exc_info=True)
+    raise
 
 # --- Firebase initialization function ---
 def initialize_firebase():
@@ -409,6 +418,11 @@ async def startup_event():
 
     logger.info("Application startup event triggered.")
     logger.debug("Checking environment configuration...")
+
+    # Lazy import of OAuth-related modules to avoid circular imports
+    from oauth_routes import get_oauth_router
+    from oauth_config import get_oauth_config
+    from jwt_utils import get_jwt_manager
 
     if env_config.is_required_missing():
         missing_vars = env_config.get_missing_required()
