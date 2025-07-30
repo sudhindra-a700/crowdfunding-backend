@@ -1,3 +1,4 @@
+```python
 import logging
 import os
 from typing import Optional, List, Dict, Any, Union
@@ -6,6 +7,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.sessions import SessionMiddleware
 import pandas as pd
 import joblib
@@ -292,12 +294,13 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ) -> Dict[str, Any]:
     """Get current user from our custom JWT token"""
-    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+    logger.debug("Entering get_current_user function")
     jwt_manager = get_jwt_manager()
     try:
         user_data = jwt_manager.get_user_from_token(credentials.credentials)
         if "id" not in user_data:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
+        logger.debug(f"Successfully retrieved user data: {user_data}")
         return user_data
     except HTTPException:
         raise
@@ -315,6 +318,7 @@ def initialize_firebase():
     global db, firebase_auth
 
     logger.info("Starting ultra robust Firebase initialization...")
+    logger.debug(f"Checking paths: {BASE_DIR / 'firebase-service-account-key.json'}, etc.")
 
     firebase_key_file_paths = [
         BASE_DIR / "firebase-service-account-key.json",
@@ -327,6 +331,7 @@ def initialize_firebase():
     for key_file_path in firebase_key_file_paths:
         try:
             key_path = Path(key_file_path)
+            logger.debug(f"Checking file: {key_path}")
             if key_path.exists():
                 logger.info(f"Found Firebase service account key file at: {key_file_path}")
                 with open(key_path, 'r', encoding='utf-8') as f:
@@ -354,6 +359,7 @@ def initialize_firebase():
     firebase_key_base64 = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
     if firebase_key_base64:
         try:
+            logger.debug("Attempting Firebase initialization with base64 key...")
             firebase_key_base64 = firebase_key_base64.strip()
             decoded_bytes = base64.b64decode(firebase_key_base64)
             decoded_string = decoded_bytes.decode("utf-8")
@@ -403,6 +409,7 @@ async def startup_event():
     global db, firebase_auth, algolia_client, algolia_index
 
     logger.info("Application startup event triggered.")
+    logger.debug("Checking environment configuration...")
 
     if env_config.is_required_missing():
         missing_vars = env_config.get_missing_required()
@@ -482,3 +489,4 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+```
