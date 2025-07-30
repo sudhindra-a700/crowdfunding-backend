@@ -1,4 +1,4 @@
-import torch
+import torch  # Added missing import
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments
 from datasets import Dataset
 import shap  # Keep SHAP for XAI
