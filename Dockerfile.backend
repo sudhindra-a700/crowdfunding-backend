@@ -98,7 +98,7 @@ COPY --chown=appuser:appuser DEhli.csv .
 COPY --chown=appuser:appuser ngo_fraud.csv .
 
 # Optionally copy Firebase service account key
-COPY --chown=appuser:appuser firebase-service-account-key.json ./firebase-service-account-key.json || \
+COPY --chown=appuser:appuser firebase-service-account-key.json ./firebase-service-account-key.json || 
 RUN echo "No Firebase key file found, using environment variable fallback" > /dev/null
 
 # Copy static directory if it exists
