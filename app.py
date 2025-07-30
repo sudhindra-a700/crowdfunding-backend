@@ -1,23 +1,21 @@
+import logging
+import os
+from typing import Optional, List, Dict, Any, Union
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.sessions import SessionMiddleware
-import os
 import pandas as pd
 import joblib
 import json
 import random
 import sys
-import logging
 import time
 import psutil
 import base64
 import secrets
-
-from typing import Optional, List, Dict, Any, Union
 
 # Import Auth for type hinting the auth client itself, not auth.Auth
 from firebase_admin import auth
@@ -197,7 +195,6 @@ class UserInfo(BaseModel):
     fraud_explanation: Optional[str] = None
     verification_details: Optional[Dict[str, Any]] = None
 
-
 class LoginRequest(BaseModel):
     id_token: str
 
@@ -272,13 +269,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # Global Firebase instances - initialized in startup_event
 db: Optional[firestore.Client] = None
 firebase_auth = None  # Firebase auth module - no specific type needed as it's a module
 algolia_client = None
 algolia_index = None
-
 
 # Dependency to get Firestore client
 def get_firestore_client() -> firestore.Client:
@@ -297,6 +292,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ) -> Dict[str, Any]:
     """Get current user from our custom JWT token"""
+    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
     jwt_manager = get_jwt_manager()
     try:
         user_data = jwt_manager.get_user_from_token(credentials.credentials)
@@ -402,7 +398,6 @@ def initialize_firebase():
     firebase_auth = None
     return False
 
-
 @app.on_event("startup")
 async def startup_event():
     global db, firebase_auth, algolia_client, algolia_index
@@ -481,7 +476,6 @@ async def startup_event():
 
     except Exception as e:
         logger.error(f"Error setting up static file serving: {e}", exc_info=True)
-
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
