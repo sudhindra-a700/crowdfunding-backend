@@ -3,7 +3,8 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials 
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer
+from fastapi.security.oauth2 import HTTPAuthorizationCredentials # Corrected import for HTTPAuthorizationCredentials
 from starlette.middleware.sessions import SessionMiddleware
 import os
 import pandas as pd
@@ -275,7 +276,7 @@ app.add_middleware(
 
 # Global Firebase instances - initialized in startup_event
 db: Optional[firestore.Client] = None
-firebase_auth: Optional[Any] = None # Changed type hint from auth.Auth to Any
+firebase_auth: Optional[Any] = None
 algolia_client = None
 algolia_index = None
 
@@ -287,7 +288,7 @@ def get_firestore_client() -> firestore.Client:
     return db
 
 # Dependency to get Firebase Auth client
-def get_firebase_auth() -> Any: # Changed type hint from auth.Auth to Any
+def get_firebase_auth() -> Any:
     if firebase_auth is None:
         raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
     return firebase_auth
@@ -332,19 +333,15 @@ def initialize_firebase():
 
             service_account_info = json.loads(decoded_string)
 
-            required_fields = ['type', 'project_id', 'private_key', 'client_email']
-            if all(field in service_account_info for field in required_fields):
-                cred = credentials.Certificate(service_account_info=service_account_info)
-                if not firebase_admin._apps:
-                    firebase_admin.initialize_app(cred)
-                db = firestore.client()
-                firebase_auth = auth.get_auth()
-                logger.info("Firebase Admin SDK initialized successfully from environment variable.")
-                return True
-            else:
-                missing = [field for field in required_fields if field not in service_account_info]
-                logger.error(f"Firebase service account info from environment variable is missing required fields: {', '.join(missing)}")
-
+            # Corrected: Pass service_account_info as positional argument
+            cred = credentials.Certificate(service_account_info)
+            if not firebase_admin._apps:
+                firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            firebase_auth = auth.get_auth()
+            logger.info("Firebase Admin SDK initialized successfully from environment variable.")
+            return True
+            
         except base64.binascii.Error as e:
             logger.error(f"Invalid base64 encoding in FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64: {e}")
         except UnicodeDecodeError as e:
