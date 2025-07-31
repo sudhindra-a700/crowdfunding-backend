@@ -3,8 +3,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer
-from fastapi.security.oauth2 import HTTPAuthorizationCredentials # Corrected import for HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials# Corrected import for HTTPAuthorizationCredentials
 from starlette.middleware.sessions import SessionMiddleware
 import os
 import pandas as pd
