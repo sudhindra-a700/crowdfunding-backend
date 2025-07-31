@@ -19,7 +19,7 @@ import secrets
 
 from typing import Optional, List, Dict, Any, Union
 
-# Import Auth for type hinting the auth client itself, not auth.Auth
+# Import auth module itself, not auth.Auth type
 from firebase_admin import auth
 from pydantic import BaseModel, Field
 
@@ -138,7 +138,7 @@ class EnvironmentConfig:
         self.missing_optional = []
         self._load_and_validate()
 
-    def _load_and_validate(self): # Corrected method name
+    def _load_and_validate(self):
         logger.info("Loading and validating environment variables...")
         for var_name, description in self.required_vars.items():
             value = os.environ.get(var_name)
@@ -275,7 +275,7 @@ app.add_middleware(
 
 # Global Firebase instances - initialized in startup_event
 db: Optional[firestore.Client] = None
-firebase_auth: Optional[auth.Auth] = None
+firebase_auth: Optional[Any] = None # Changed type hint from auth.Auth to Any
 algolia_client = None
 algolia_index = None
 
@@ -287,7 +287,7 @@ def get_firestore_client() -> firestore.Client:
     return db
 
 # Dependency to get Firebase Auth client
-def get_firebase_auth() -> auth.Auth:
+def get_firebase_auth() -> Any: # Changed type hint from auth.Auth to Any
     if firebase_auth is None:
         raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
     return firebase_auth
