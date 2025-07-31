@@ -1,22 +1,23 @@
-import logging
-import os
-from typing import Optional, List, Dict, Any, Union
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.sessions import SessionMiddleware
+import os
 import pandas as pd
 import joblib
 import json
 import random
 import sys
+import logging
 import time
 import psutil
 import base64
 import secrets
+
+from typing import Optional, List, Dict, Any, Union
 
 # Import Auth for type hinting the auth client itself, not auth.Auth
 from firebase_admin import auth
@@ -26,10 +27,10 @@ from pydantic import BaseModel, Field
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 
-# OAuth imports (delayed to avoid circular issues)
-# from oauth_routes import get_oauth_router  # Moved to startup_event
-# from oauth_config import get_oauth_config  # Moved to startup_event
-# from jwt_utils import get_jwt_manager      # Moved to startup_event
+# OAuth imports
+from oauth_routes import get_oauth_router
+from oauth_config import get_oauth_config
+from jwt_utils import get_jwt_manager
 
 # Import fraud detection module (only import, no direct calls here)
 from fraud_detection import predict_fraud, load_ngo_darpan_data, load_fraud_detection_model, fine_tune_model
@@ -109,9 +110,6 @@ def setup_logging():
 
 logger = setup_logging()
 
-# Module-level check for HTTPBearer
-logger.debug(f"Checking HTTPBearer availability: {HTTPBearer is not None}")
-
 class EnvironmentConfig:
     def __init__(self):
         self.required_vars = {}
@@ -140,7 +138,7 @@ class EnvironmentConfig:
         self.missing_optional = []
         self._load_and_validate()
 
-    def _load_and_validate(self):
+    def _load_and_validate(self): # Corrected method name
         logger.info("Loading and validating environment variables...")
         for var_name, description in self.required_vars.items():
             value = os.environ.get(var_name)
@@ -198,6 +196,7 @@ class UserInfo(BaseModel):
     fraud_score: Optional[float] = None
     fraud_explanation: Optional[str] = None
     verification_details: Optional[Dict[str, Any]] = None
+
 
 class LoginRequest(BaseModel):
     id_token: str
@@ -273,11 +272,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Global Firebase instances - initialized in startup_event
 db: Optional[firestore.Client] = None
-firebase_auth = None  # Firebase auth module - no specific type needed as it's a module
+firebase_auth: Optional[auth.Auth] = None
 algolia_client = None
 algolia_index = None
+
 
 # Dependency to get Firestore client
 def get_firestore_client() -> firestore.Client:
@@ -286,96 +287,54 @@ def get_firestore_client() -> firestore.Client:
     return db
 
 # Dependency to get Firebase Auth client
-def get_firebase_auth():  # Firebase auth module - no specific type needed
+def get_firebase_auth() -> auth.Auth:
     if firebase_auth is None:
         raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
     return firebase_auth
 
 # Dependency to get current user from our custom JWT
-try:
-    async def get_current_user(
-        credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
-    ) -> Dict[str, Any]:
-        """Get current user from our custom JWT token"""
-        logger.debug("Entering get_current_user function")
-        # Lazy import of jwt_manager to avoid circular issues
-        from jwt_utils import get_jwt_manager
-        jwt_manager = get_jwt_manager()
-        try:
-            user_data = jwt_manager.get_user_from_token(credentials.credentials)
-            if "id" not in user_data:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
-            logger.debug(f"Successfully retrieved user data: {user_data}")
-            return user_data
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get current user from JWT: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-except NameError as e:
-    logger.critical(f"Failed to define get_current_user due to: {e}", exc_info=True)
-    raise
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+) -> Dict[str, Any]:
+    """Get current user from our custom JWT token"""
+    jwt_manager = get_jwt_manager()
+    try:
+        user_data = jwt_manager.get_user_from_token(credentials.credentials)
+        if "id" not in user_data:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
+        return user_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get current user from JWT: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
 # --- Firebase initialization function ---
 def initialize_firebase():
-    """Ultra robust Firebase initialization with multiple fallback strategies"""
+    """Ultra robust Firebase initialization focusing on environment variable and ADC."""
     global db, firebase_auth
 
-    logger.info("Starting ultra robust Firebase initialization...")
-    logger.debug(f"Checking paths: {BASE_DIR / 'firebase-service-account-key.json'}, etc.")
+    logger.info("Starting Firebase initialization (environment variable first)...")
 
-    firebase_key_file_paths = [
-        BASE_DIR / "firebase-service-account-key.json",
-        "/app/firebase-service-account-key.json",
-        "firebase-service-account-key.json",
-        "/opt/render/project/src/firebase-service-account-key.json",
-        "./firebase-service-account-key.json"
-    ]
-
-    for key_file_path in firebase_key_file_paths:
-        try:
-            key_path = Path(key_file_path)
-            logger.debug(f"Checking file: {key_path}")
-            if key_path.exists():
-                logger.info(f"Found Firebase service account key file at: {key_file_path}")
-                with open(key_path, 'r', encoding='utf-8') as f:
-                    json_content = json.load(f)
-
-                required_fields = ['type', 'project_id', 'private_key', 'client_email']
-                if all(field in json_content for field in required_fields):
-                    cred = credentials.Certificate(service_account_info=json_content) # Pass dict directly
-                    if not firebase_admin._apps:
-                        firebase_admin.initialize_app(cred)
-                    db = firestore.client()
-                    firebase_auth = auth.get_auth()
-                    logger.info("Firebase Admin SDK initialized successfully from file.")
-                    return True
-                else:
-                    logger.warning(f"Firebase key file at {key_file_path} is missing required fields")
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"Invalid JSON in Firebase key file {key_file_path}: {e}")
-            continue
-        except Exception as e:
-            logger.warning(f"Failed to initialize Firebase from file {key_file_path}: {e}")
-            continue
-
+    # Attempt 1: From base64 encoded environment variable (PRIMARY METHOD)
     firebase_key_base64 = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
     if firebase_key_base64:
         try:
-            logger.debug("Attempting Firebase initialization with base64 key...")
             firebase_key_base64 = firebase_key_base64.strip()
             decoded_bytes = base64.b64decode(firebase_key_base64)
             decoded_string = decoded_bytes.decode("utf-8")
+            
+            logger.debug(f"Decoded base64 content snippet (first 100 chars): {decoded_string[:100]}...")
+
             service_account_info = json.loads(decoded_string)
 
             required_fields = ['type', 'project_id', 'private_key', 'client_email']
             if all(field in service_account_info for field in required_fields):
-                cred = credentials.Certificate(service_account_info=service_account_info) # Pass dict directly
+                cred = credentials.Certificate(service_account_info=service_account_info)
                 if not firebase_admin._apps:
                     firebase_admin.initialize_app(cred)
                 db = firestore.client()
@@ -383,18 +342,20 @@ def initialize_firebase():
                 logger.info("Firebase Admin SDK initialized successfully from environment variable.")
                 return True
             else:
-                logger.error("Firebase service account info from environment variable is missing required fields")
+                missing = [field for field in required_fields if field not in service_account_info]
+                logger.error(f"Firebase service account info from environment variable is missing required fields: {', '.join(missing)}")
 
         except base64.binascii.Error as e:
             logger.error(f"Invalid base64 encoding in FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64: {e}")
         except UnicodeDecodeError as e:
             logger.error(f"Invalid UTF-8 encoding in Firebase service account key: {e}")
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in Firebase service account key: {e}")
+            logger.error(f"Invalid JSON in Firebase service account key from environment variable: {e}")
         except Exception as e:
             logger.error(f"Unexpected error with environment variable Firebase key: {e}")
 
-    # Attempt 3: Application Default Credentials (for Google Cloud environments)
+    # Attempt 2: Application Default Credentials (for Google Cloud environments)
+    # This is a fallback if the environment variable is not set or fails.
     try:
         logger.info("Attempting ApplicationDefault credentials...")
         cred = credentials.ApplicationDefault()
@@ -412,17 +373,12 @@ def initialize_firebase():
     firebase_auth = None
     return False
 
+
 @app.on_event("startup")
 async def startup_event():
     global db, firebase_auth, algolia_client, algolia_index
 
     logger.info("Application startup event triggered.")
-    logger.debug("Checking environment configuration...")
-
-    # Lazy import of OAuth-related modules to avoid circular imports
-    from oauth_routes import get_oauth_router
-    from oauth_config import get_oauth_config
-    from jwt_utils import get_jwt_manager
 
     if env_config.is_required_missing():
         missing_vars = env_config.get_missing_required()
@@ -496,6 +452,7 @@ async def startup_event():
 
     except Exception as e:
         logger.error(f"Error setting up static file serving: {e}", exc_info=True)
+
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
