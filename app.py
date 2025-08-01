@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials# Corrected import for HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.sessions import SessionMiddleware
 import os
 import pandas as pd
@@ -18,24 +18,30 @@ import base64
 import secrets
 
 from typing import Optional, List, Dict, Any, Union
-
-# Import auth module itself, not auth.Auth type
-from firebase_admin import auth
 from pydantic import BaseModel, Field
 
 # Firebase Admin SDK imports
-import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+try:
+    import firebase_admin
+    from firebase_admin import credentials, auth, firestore, messaging
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    firebase_admin = None
+    credentials = None
+    auth = None
+    firestore = None
+    messaging = None
 
 # OAuth imports
 from oauth_routes import get_oauth_router
 from oauth_config import get_oauth_config
 from jwt_utils import get_jwt_manager
 
-# Import fraud detection module (only import, no direct calls here)
-from fraud_detection import predict_fraud, load_ngo_darpan_data, load_fraud_detection_model, fine_tune_model
+# Import fraud detection module
+from fraud_detection import predict_fraud, load_ngo_darpan_data, load_fraud_detection_model, fine_tune_model # Added load_fraud_detection_model, fine_tune_model
 
-# Algolia Search Client (only import, initialization moved to startup)
+# Algolia Search Client
 try:
     from algoliasearch.search_client import SearchClient
     ALGOLIA_AVAILABLE = True
@@ -43,378 +49,127 @@ except ImportError:
     ALGOLIA_AVAILABLE = False
     SearchClient = None
 
-# Define BASE_DIR at the very top, as it's a fundamental path
-BASE_DIR = Path(__file__).resolve().parent
-
 # --- Enhanced Logging Configuration ---
 def setup_logging():
     """Configure enhanced logging for production"""
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     log_format = os.environ.get("LOG_FORMAT", "json")
 
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-    for handler in logging.getLogger(__name__).handlers[:]:
-        logging.getLogger(__name__).removeHandler(handler)
+    # Clear existing handlers to prevent duplicate logs
+    logging.getLogger().handlers.clear()
 
-    if log_format.lower() == "json":
-        import json
-        import datetime
-
-        class JSONFormatter(logging.Formatter):
-            def format(self, record):
-                try:
-                    log_entry = {
-                        "timestamp": datetime.datetime.utcnow().isoformat(),
-                        "level": record.levelname,
-                        "logger": record.name,
-                        "message": record.getMessage(),
-                        "module": record.module,
-                        "function": record.funcName,
-                        "line": record.lineno
-                    }
-                    if record.exc_info:
-                        log_entry["exception"] = self.formatException(record.exc_info)
-                    return json.dumps(log_entry)
-                except Exception as e:
-                    return f"ERROR: Could not format log record to JSON: {e} - Original message: {record.getMessage()}"
-
-            def handleError(self, record):
-                pass
-
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(JSONFormatter())
-    else:
-        handler = logging.StreamHandler(sys.stdout)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+    if log_format == "json":
+        # Production-ready JSON logging
+        logging.basicConfig(
+            level=log_level,
+            format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s", "logger": "%(name)s"}',
+            datefmt="%Y-%m-%dT%H:%M:%S%z"
         )
-        handler.setFormatter(formatter)
+    else:
+        # Development-friendly colored logging
+        try:
+            from rich.logging import RichHandler
+            logging.basicConfig(
+                level=log_level,
+                format="%(message)s",
+                datefmt="[%X]",
+                handlers=[RichHandler()]
+            )
+        except ImportError:
+            logging.basicConfig(level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        handlers=[handler],
-        force=True,
-        # The 'disable_existing_loggers' argument is removed as it causes ValueError in some Python versions.
-        # Its functionality is largely covered by 'force=True' and explicit handler management.
-    )
+    logging.getLogger("uvicorn").handlers.clear()
+    logging.getLogger("uvicorn.access").handlers.clear()
+    logging.getLogger("uvicorn.error").handlers.clear()
 
-    logging.getLogger("uvicorn").setLevel(logging.INFO)
-    logging.getLogger("fastapi").setLevel(logging.INFO)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("firebase_admin").setLevel(logging.INFO)
-    logging.getLogger("authlib").setLevel(logging.INFO)
+# Setup logging on module load
+setup_logging()
+logger = logging.getLogger(__name__)
 
-    return logging.getLogger(__name__)
-
-logger = setup_logging()
-
-class EnvironmentConfig:
-    def __init__(self):
-        self.required_vars = {}
-        self.optional_vars = {
-            "FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64": "Firebase authentication (fallback)",
-            "ALGOLIA_API_KEY": "Search functionality",
-            "ALGOLIA_APP_ID": "Search functionality",
-            "BREVO_API_KEY": "Email notifications",
-            "INSTAMOJO_API_KEY": "Payment processing",
-            "INSTAMOJO_AUTH_TOKEN": "Payment processing",
-            "LOG_LEVEL": "Logging configuration",
-            "LOG_FORMAT": "Logging format",
-            "ENVIRONMENT": "Environment identification",
-            "GOOGLE_CLIENT_ID": "Google OAuth authentication",
-            "GOOGLE_CLIENT_SECRET": "Google OAuth authentication",
-            "FACEBOOK_CLIENT_ID": "Facebook OAuth authentication",
-            "FACEBOOK_CLIENT_SECRET": "Facebook OAuth authentication",
-            "JWT_SECRET_KEY": "JWT token signing",
-            "SECRET_KEY": "Session management",
-            "GOOGLE_REDIRECT_URI": "Google OAuth redirect URI",
-            "FACEBOOK_REDIRECT_URI": "Facebook OAuth redirect URI",
-            "FRONTEND_BASE_URL": "Frontend base URL for redirects"
-        }
-        self.config = {}
-        self.missing_required = []
-        self.missing_optional = []
-        self._load_and_validate()
-
-    def _load_and_validate(self):
-        logger.info("Loading and validating environment variables...")
-        for var_name, description in self.required_vars.items():
-            value = os.environ.get(var_name)
-            if not value:
-                self.missing_required.append((var_name, description))
-                logger.error(f"Missing required environment variable: {var_name} ({description})")
-            else:
-                self.config[var_name] = value
-                logger.info(f"✓ Required variable loaded: {var_name}")
-
-        for var_name, description in self.optional_vars.items():
-            value = os.environ.get(var_name)
-            if not value:
-                self.missing_optional.append((var_name, description))
-                logger.warning(
-                    f"Missing optional environment variable: {var_name} ({description}) - Feature may be limited")
-            else:
-                self.config[var_name] = value
-                logger.info(f"✓ Optional variable loaded: {var_name}")
-
-        self.config.setdefault("LOG_LEVEL", "INFO")
-        self.config.setdefault("LOG_FORMAT", "standard")
-        self.config.setdefault("ENVIRONMENT", "production")
-
-    def get(self, key: str, default: str = None) -> str:
-        return self.config.get(key, default)
-
-    def is_required_missing(self) -> bool:
-        return len(self.missing_required) > 0
-
-    def get_missing_required(self) -> List[tuple]:
-        return self.missing_required
-
-    def get_missing_optional(self) -> List[tuple]:
-        return self.missing_optional
-
-env_config = EnvironmentConfig()
-
-# Pydantic models
-class UserInfo(BaseModel):
-    uid: str
-    email: Optional[str] = None
-    name: Optional[str] = None
-    picture: Optional[str] = None
-    user_type: str = "individual"
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    organization_name: Optional[str] = None
-    organization_type: Optional[str] = None
-    description: Optional[str] = None
-    ngo_darpan_id: Optional[str] = None
-    pan: Optional[str] = None
-    fcra_number: Optional[str] = None
-    is_fraudulent: Optional[bool] = None
-    fraud_score: Optional[float] = None
-    fraud_explanation: Optional[str] = None
-    verification_details: Optional[Dict[str, Any]] = None
-
-
-class LoginRequest(BaseModel):
-    id_token: str
-
-class IndividualProfileData(BaseModel):
-    full_name: str
-    phone: str
-    address: str
-
-class OrganizationProfileData(BaseModel):
-    contact_full_name: str
-    contact_phone: str
-    organization_name: str
-    organization_type: str
-    description: str
-    address: str
-    ngo_darpan_id: Optional[str] = None
-    pan: Optional[str] = None
-    fcra_number: Optional[str] = None
-
-class RegisterRequest(BaseModel):
-    id_token: str
-    user_type: str
-    individual_data: Optional[IndividualProfileData] = None
-    organization_data: Optional[OrganizationProfileData] = None
-
-class UserProfileUpdateRequest(BaseModel):
-    user_type: Optional[str] = None
-    email: Optional[str] = None
-    name: Optional[str] = None
-    picture: Optional[str] = None
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    organization_name: Optional[str] = None
-    organization_type: Optional[str] = None
-    description: Optional[str] = None
-    ngo_darpan_id: Optional[str] = None
-    pan: Optional[str] = None
-    fcra_number: Optional[str] = None
-
-class CampaignCreateRequest(BaseModel):
-    campaign_name: str
-    description: str
-    goal: float
-    category: str
-    image_base64: Optional[str] = None
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    expires_in: int = Field(default=3600, description="Expires in seconds")
-    refresh_token: Optional[str] = None
-    user_info: UserInfo
-
-# Create FastAPI app instance at the very top
+# --- Application Setup ---
+BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(
-    title="HAVEN Backend Service with OAuth and Firebase",
-    description="Crowdfunding platform backend with Google/Facebook OAuth and Firebase Authentication/Firestore",
-    version="2.0.0"
+    title="HAVEN Crowdfunding Platform Backend",
+    description="Backend API for managing campaigns, user authentication, and fraud detection.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
-# Add middleware directly after app creation
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
-)
-
+# --- Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Adjust this for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Session middleware for OAuth state
+SECRET_KEY = os.getenv("SESSION_SECRET_KEY", secrets.token_urlsafe(32))
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
-# Global Firebase instances - initialized in startup_event
-db: Optional[firestore.Client] = None
-firebase_auth: Optional[Any] = None
-algolia_client = None
-algolia_index = None
+# OAuth2PasswordBearer for dependency injection
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
-
-# Dependency to get Firestore client
-def get_firestore_client() -> firestore.Client:
-    if db is None:
-        raise HTTPException(status_code=500, detail="Firestore client not initialized.")
-    return db
-
-# Dependency to get Firebase Auth client
-def get_firebase_auth() -> Any:
-    if firebase_auth is None:
-        raise HTTPException(status_code=500, detail="Firebase Auth client not initialized.")
-    return firebase_auth
-
-# Dependency to get current user from our custom JWT
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
-) -> Dict[str, Any]:
-    """Get current user from our custom JWT token"""
+# --- Dependency Functions ---
+def get_current_user_from_token(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
+    """Dependency to get current user from a JWT token."""
     jwt_manager = get_jwt_manager()
-    try:
-        user_data = jwt_manager.get_user_from_token(credentials.credentials)
-        if "id" not in user_data:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found in token.")
-        return user_data
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get current user from JWT: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
+    user_data = jwt_manager.get_user_from_token(token)
+    return user_data
 
-# --- Firebase initialization function ---
-def initialize_firebase():
-    """Ultra robust Firebase initialization focusing on environment variable and ADC."""
-    global db, firebase_auth
-
-    logger.info("Starting Firebase initialization (environment variable first)...")
-
-    # Attempt 1: From base64 encoded environment variable (PRIMARY METHOD)
-    firebase_key_base64 = env_config.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
-    if firebase_key_base64:
-        try:
-            firebase_key_base64 = firebase_key_base64.strip()
-            decoded_bytes = base64.b64decode(firebase_key_base64)
-            decoded_string = decoded_bytes.decode("utf-8")
-            
-            logger.debug(f"Decoded base64 content snippet (first 100 chars): {decoded_string[:100]}...")
-
-            service_account_info = json.loads(decoded_string)
-
-            # Corrected: Pass service_account_info as positional argument
-            cred = credentials.Certificate(service_account_info)
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            firebase_auth = auth.get_auth()
-            logger.info("Firebase Admin SDK initialized successfully from environment variable.")
-            return True
-            
-        except base64.binascii.Error as e:
-            logger.error(f"Invalid base64 encoding in FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64: {e}")
-        except UnicodeDecodeError as e:
-            logger.error(f"Invalid UTF-8 encoding in Firebase service account key: {e}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in Firebase service account key from environment variable: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error with environment variable Firebase key: {e}")
-
-    # Attempt 2: Application Default Credentials (for Google Cloud environments)
-    # This is a fallback if the environment variable is not set or fails.
-    try:
-        logger.info("Attempting ApplicationDefault credentials...")
-        cred = credentials.ApplicationDefault()
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        firebase_auth = auth.get_auth()
-        logger.info("Firebase Admin SDK initialized successfully with ApplicationDefault credentials.")
-        return True
-    except Exception as e:
-        logger.warning(f"ApplicationDefault credentials failed: {e}")
-
-    logger.critical("All Firebase initialization strategies failed. Running in degraded mode without Firebase.")
-    db = None
-    firebase_auth = None
-    return False
-
-
+# --- Event Handlers ---
 @app.on_event("startup")
 async def startup_event():
-    global db, firebase_auth, algolia_client, algolia_index
-
+    """Application startup event handler."""
     logger.info("Application startup event triggered.")
 
-    if env_config.is_required_missing():
-        missing_vars = env_config.get_missing_required()
-        error_msg = f"Missing required environment variables: {', '.join([var for var, _ in missing_vars])}"
-        logger.critical(error_msg)
-        sys.exit(1)
-
-    if env_config.get_missing_optional():
-        missing_optional = env_config.get_missing_optional()
-        for var, description in missing_optional:
-            logger.warning(f"Optional variable {var} not set - {description} may be limited")
-
-    # Initialize Firebase
-    logger.info("Attempting Firebase initialization...")
-    firebase_initialized = initialize_firebase()
-    if not firebase_initialized:
-        logger.critical("Firebase not fully initialized. Exiting application.")
-        sys.exit(1) # Exit if Firebase initialization fails
-
-    # Initialize OAuth configuration (now uses env_config to get redirect URIs)
-    oauth_config = get_oauth_config()
-    if oauth_config.is_configured:
-        logger.info("OAuth configuration loaded successfully")
-        if oauth_config.is_google_configured:
-            logger.info("✓ Google OAuth configured")
-        if oauth_config.is_facebook_configured:
-            logger.info("✓ Facebook OAuth configured")
+    # --- Firebase Initialization (FIX) ---
+    if FIREBASE_AVAILABLE:
+        try:
+            # Check if Firebase is already initialized
+            if not firebase_admin._apps:
+                firebase_service_account_base64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
+                if firebase_service_account_base64:
+                    # Decode the base64 string to get the JSON content
+                    service_account_json = base64.b64decode(firebase_service_account_base64).decode('utf-8')
+                    cred = credentials.Certificate(json.loads(service_account_json))
+                    firebase_admin.initialize_app(cred)
+                    logger.info("Firebase app initialized successfully from environment variable.")
+                else:
+                    logger.warning("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 not found. Firebase features will be disabled.")
+            else:
+                logger.info("Firebase app already initialized.")
+        except Exception as e:
+            logger.error(f"Error initializing Firebase app: {e}", exc_info=True)
+            global FIREBASE_AVAILABLE
+            FIREBASE_AVAILABLE = False
     else:
-        logger.warning("No OAuth providers configured - OAuth functionality will be disabled")
+        logger.warning("Firebase Admin SDK not available. Please install 'firebase-admin' to enable Firebase features.")
 
-    # Algolia client initialization (moved into startup_event)
+    # --- Fraud Detection Model Loading ---
     try:
-        logger.info("Attempting Algolia client initialization...")
-        if ALGOLIA_AVAILABLE:
-            algolia_app_id = env_config.get("ALGOLIA_APP_ID")
-            algolia_api_key = env_config.get("ALGOLIA_API_KEY")
+        load_fraud_detection_model()
+        logger.info("Fraud detection model loaded successfully.")
+    except Exception as e:
+        logger.error(f"Error loading fraud detection model: {e}", exc_info=True)
 
+    # --- NGO Darpan Data Loading ---
+    try:
+        load_ngo_darpan_data()
+        logger.info("NGO Darpan data loaded successfully.")
+    except Exception as e:
+        logger.error(f"Error loading NGO Darpan data: {e}", exc_info=True)
+
+    # --- Algolia Search Initialization ---
+    try:
+        if ALGOLIA_AVAILABLE:
+            algolia_app_id = os.getenv("ALGOLIA_APP_ID")
+            algolia_api_key = os.getenv("ALGOLIA_API_KEY")
             if algolia_app_id and algolia_api_key:
-                algolia_client = SearchClient(algolia_app_id, algolia_api_key)
-                algolia_index = algolia_client.init_index("campaigns")
+                algolia_client = SearchClient.create(algolia_app_id, algolia_api_key)
+                algolia_index = algolia_client.init_index('campaigns')
                 logger.info("Algolia client initialized for index: campaigns")
             else:
                 logger.warning("Algolia API keys not configured. Search functionality will be limited.")
@@ -430,7 +185,6 @@ async def startup_event():
         algolia_client = None
         algolia_index = None
 
-    # Static file setup (MOVED INTO startup_event)
     STATIC_DIR = BASE_DIR / "static"
     try:
         if not STATIC_DIR.exists():
@@ -449,9 +203,22 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Error setting up static file serving: {e}", exc_info=True)
 
-
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
+# --- API Routes ---
+app.include_router(get_oauth_router())
+
+@app.get("/health", response_class=HTMLResponse)
+async def health_check():
+    """Health check endpoint."""
+    return "OK"
+
+@app.get("/")
+async def home_redirect():
+    """Redirects to the documentation."""
+    return RedirectResponse(url="/docs")
+
+# Main entry point (for local development)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
