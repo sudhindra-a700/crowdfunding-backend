@@ -55,10 +55,7 @@ COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy main application files
-COPY --chown=appuser:appuser main.py .
 COPY --chown=appuser:appuser app.py .
-COPY --chown=appuser:appuser config.py .
-COPY --chown=appuser:appuser models.py .
 COPY --chown=appuser:appuser fraud_detection.py .
 
 # Copy OAuth integration files (FIXED: Added all OAuth files)
@@ -71,9 +68,6 @@ COPY --chown=appuser:appuser jwt_utils.py .
 # Copy data files
 COPY --chown=appuser:appuser DEhli.csv .
 COPY --chown=appuser:appuser ngo_fraud.csv .
-
-# The following line has been removed to not include the key file in the image
-# COPY --chown=appuser:appuser firebase-service-account-key.json .
 
 # Copy static directory if it exists
 COPY --chown=appuser:appuser static/ ./static/
