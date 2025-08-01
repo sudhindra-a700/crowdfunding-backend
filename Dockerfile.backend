@@ -54,8 +54,16 @@ WORKDIR /app
 COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Set a build-time argument for the Firebase key
+ARG FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
+
+# Set the environment variable from the build argument
+ENV FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64=$FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
+
 # Copy main application files
+COPY --chown=appuser:appuser main.py .
 COPY --chown=appuser:appuser app.py .
+COPY --chown=appuser:appuser config.py .
 COPY --chown=appuser:appuser fraud_detection.py .
 
 # Copy OAuth integration files (FIXED: Added all OAuth files)
@@ -69,12 +77,8 @@ COPY --chown=appuser:appuser jwt_utils.py .
 COPY --chown=appuser:appuser DEhli.csv .
 COPY --chown=appuser:appuser ngo_fraud.csv .
 
-# Copy static directory if it exists
+# Copy static directory with correct permissions from the start
 COPY --chown=appuser:appuser static/ ./static/
-
-# Create necessary directories with proper permissions
-RUN mkdir -p /app/static/icons /app/static/shap_plots \
-    && chown -R appuser:appuser /app/static
 
 # Switch to non-root user
 USER appuser
