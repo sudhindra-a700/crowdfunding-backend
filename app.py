@@ -21,17 +21,9 @@ from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
 # Firebase Admin SDK imports
-try:
-    import firebase_admin
-    from firebase_admin import credentials, auth, firestore, messaging
-    FIREBASE_AVAILABLE = True
-except ImportError:
-    FIREBASE_AVAILABLE = False
-    firebase_admin = None
-    credentials = None
-    auth = None
-    firestore = None
-    messaging = None
+import firebase_admin
+from firebase_admin import credentials, auth, firestore, messaging
+from firebase_admin.exceptions import FirebaseAppError
 
 # OAuth imports
 from oauth_routes import get_oauth_router
@@ -56,119 +48,93 @@ def setup_logging():
     log_format = os.environ.get("LOG_FORMAT", "json")
 
     # Clear existing handlers to prevent duplicate logs
-    logging.getLogger().handlers.clear()
+    logging.basicConfig(handlers=[], level=logging.INFO)
 
-    if log_format == "json":
-        # Production-ready JSON logging
-        logging.basicConfig(
-            level=log_level,
-            format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s", "logger": "%(name)s"}',
-            datefmt="%Y-%m-%dT%H:%M:%S%z"
-        )
-    else:
-        # Development-friendly colored logging
-        try:
-            from rich.logging import RichHandler
-            logging.basicConfig(
-                level=log_level,
-                format="%(message)s",
-                datefmt="[%X]",
-                handlers=[RichHandler()]
-            )
-        except ImportError:
-            logging.basicConfig(level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    # Use rich for local development, fallback to default for production
+    try:
+        from rich.logging import RichHandler
+        if log_format == "rich":
+            handler = RichHandler(rich_tracebacks=True,
+                                  tracebacks_show_locals=False,
+                                  markup=True)
+            logging.basicConfig(level=log_level, format="%(message)s", datefmt="[%X]", handlers=[handler])
+        else:
+            handler = logging.StreamHandler(sys.stdout)
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            logging.basicConfig(level=log_level, handlers=[handler])
+    except ImportError:
+        logging.basicConfig(level=log_level)
+        logging.warning("rich library not found. Using default logging.")
 
-    logging.getLogger("uvicorn").handlers.clear()
-    logging.getLogger("uvicorn.access").handlers.clear()
-    logging.getLogger("uvicorn.error").handlers.clear()
-
-# Setup logging on module load
+# Initialize logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# --- Application Setup ---
-BASE_DIR = Path(__file__).resolve().parent
+# --- FastAPI Application Setup ---
 app = FastAPI(
-    title="HAVEN Crowdfunding Platform Backend",
-    description="Backend API for managing campaigns, user authentication, and fraud detection.",
+    title="Haven Crowdfunding Backend",
+    description="A backend for a crowdfunding platform with fraud detection and OAuth.",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
 )
 
-# --- Middleware ---
+# CORS Middleware for all origins (for development)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Session middleware for OAuth state
-SECRET_KEY = os.getenv("SESSION_SECRET_KEY", secrets.token_urlsafe(32))
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+# Session Middleware for OAuth
+app.add_middleware(SessionMiddleware, secret_key=secrets.token_urlsafe(32))
 
 # OAuth2PasswordBearer for dependency injection
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
-# --- Dependency Functions ---
-def get_current_user_from_token(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
-    """Dependency to get current user from a JWT token."""
-    jwt_manager = get_jwt_manager()
-    user_data = jwt_manager.get_user_from_token(token)
-    return user_data
+# Include the OAuth router
+oauth_router = get_oauth_router()
+app.include_router(oauth_router)
 
-# --- Event Handlers ---
+# --- Application Lifecycle Events ---
 @app.on_event("startup")
 async def startup_event():
-    """Application startup event handler."""
+    """
+    Application startup event handler.
+    Initializes Firebase, Algolia, and fraud detection models.
+    """
     logger.info("Application startup event triggered.")
-
-    # --- Firebase Initialization (FIX) ---
-    if FIREBASE_AVAILABLE:
+    try:
+        # 1. Initialize Firebase Admin SDK
         try:
-            # Check if Firebase is already initialized
-            if not firebase_admin._apps:
-                firebase_service_account_base64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
-                if firebase_service_account_base64:
-                    # Decode the base64 string to get the JSON content
-                    service_account_json = base64.b64decode(firebase_service_account_base64).decode('utf-8')
-                    cred = credentials.Certificate(json.loads(service_account_json))
+            # Check if the app is already initialized, a common issue with Gunicorn workers
+            firebase_admin.get_app()
+            logger.warning("Firebase app already initialized.")
+        except ValueError:
+            logger.info("Initializing Firebase app...")
+            cred_json_base64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
+            if cred_json_base64:
+                try:
+                    cred_json = json.loads(base64.b64decode(cred_json_base64).decode('utf-8'))
+                    cred = credentials.Certificate(cred_json)
                     firebase_admin.initialize_app(cred)
-                    logger.info("Firebase app initialized successfully from environment variable.")
-                else:
-                    logger.warning("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 not found. Firebase features will be disabled.")
+                    logger.info("Firebase app initialized successfully from base64 env var.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Firebase from base64 env var: {e}", exc_info=True)
+                    # This will re-raise the exception to be caught by the outer block
+                    raise
             else:
-                logger.info("Firebase app already initialized.")
-        except Exception as e:
-            logger.error(f"Error initializing Firebase app: {e}", exc_info=True)
-            global FIREBASE_AVAILABLE
-            FIREBASE_AVAILABLE = False
-    else:
-        logger.warning("Firebase Admin SDK not available. Please install 'firebase-admin' to enable Firebase features.")
-
-    # --- Fraud Detection Model Loading ---
-    try:
-        load_fraud_detection_model()
-        logger.info("Fraud detection model loaded successfully.")
-    except Exception as e:
-        logger.error(f"Error loading fraud detection model: {e}", exc_info=True)
-
-    # --- NGO Darpan Data Loading ---
-    try:
-        load_ngo_darpan_data()
-        logger.info("NGO Darpan data loaded successfully.")
-    except Exception as e:
-        logger.error(f"Error loading NGO Darpan data: {e}", exc_info=True)
-
-    # --- Algolia Search Initialization ---
-    try:
+                logger.warning("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 not found. Attempting to use default credentials.")
+                firebase_admin.initialize_app()
+                logger.info("Firebase app initialized successfully with default credentials.")
+        
+        # 2. Initialize Algolia Client
         if ALGOLIA_AVAILABLE:
-            algolia_app_id = os.getenv("ALGOLIA_APP_ID")
+            algolia_client_id = os.getenv("ALGOLIA_APP_ID")
             algolia_api_key = os.getenv("ALGOLIA_API_KEY")
-            if algolia_app_id and algolia_api_key:
-                algolia_client = SearchClient.create(algolia_app_id, algolia_api_key)
+            if algolia_client_id and algolia_api_key:
+                algolia_client = SearchClient.create(algolia_client_id, algolia_api_key)
                 algolia_index = algolia_client.init_index('campaigns')
                 logger.info("Algolia client initialized for index: campaigns")
             else:
@@ -180,13 +146,7 @@ async def startup_event():
             algolia_client = None
             algolia_index = None
 
-    except Exception as e:
-        logger.error(f"Error initializing Algolia client: {e}", exc_info=True)
-        algolia_client = None
-        algolia_index = None
-
-    STATIC_DIR = BASE_DIR / "static"
-    try:
+        STATIC_DIR = Path("static")
         if not STATIC_DIR.exists():
             STATIC_DIR.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created static directory: {STATIC_DIR}")
@@ -201,24 +161,15 @@ async def startup_event():
         logger.info(f"Mounted static files from: {STATIC_DIR}")
 
     except Exception as e:
-        logger.error(f"Error setting up static file serving: {e}", exc_info=True)
+        logger.error(f"Fatal error during application startup: {e}", exc_info=True)
+        # Re-raise the exception to let Gunicorn handle it and fail the worker gracefully.
+        # This is a better approach than silently failing.
+        raise
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
-# --- API Routes ---
-app.include_router(get_oauth_router())
-
-@app.get("/health", response_class=HTMLResponse)
-async def health_check():
-    """Health check endpoint."""
-    return "OK"
-
-@app.get("/")
-async def home_redirect():
-    """Redirects to the documentation."""
-    return RedirectResponse(url="/docs")
-
-# Main entry point (for local development)
 if __name__ == "__main__":
     import uvicorn
+    # A simple way to run the app. In production, use Gunicorn with the `app` object directly.
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
