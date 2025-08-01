@@ -163,7 +163,6 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Fatal error during application startup: {e}", exc_info=True)
         # Re-raise the exception to let Gunicorn handle it and fail the worker gracefully.
-        # This is a better approach than silently failing.
         raise
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
