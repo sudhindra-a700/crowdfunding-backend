@@ -61,9 +61,7 @@ ARG FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
 ENV FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64=$FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
 
 # Copy main application files
-COPY --chown=appuser:appuser main.py .
 COPY --chown=appuser:appuser app.py .
-COPY --chown=appuser:appuser config.py .
 COPY --chown=appuser:appuser fraud_detection.py .
 
 # Copy OAuth integration files (FIXED: Added all OAuth files)
