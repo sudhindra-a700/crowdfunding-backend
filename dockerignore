@@ -68,8 +68,8 @@ sdist/
 var/
 wheels/
 *.egg-info/
-.installed_cfg
+.installed.cfg
 *.egg
 
-# Firebase service account key (explicitly ignore as it's from env var)
-firebase-service-account-key.json
+# Explicitly ignore the Firebase service account key file
+firebase-service-account-key.json.json
