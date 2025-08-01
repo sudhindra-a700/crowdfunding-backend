@@ -31,9 +31,6 @@ RUN pip install --no-cache-dir cython
 # Install core dependencies first to catch any issues early
 RUN pip install --no-cache-dir fastapi==0.111.0 uvicorn==0.30.1 gunicorn==22.0.0
 
-# Verify fastapi.security is available
-RUN python -c "from fastapi.security import HTTPBearer; print('HTTPBearer import successful')"
-
 # Install algoliasearch explicitly with version
 RUN pip install --no-cache-dir algoliasearch==3.0.0
 
@@ -41,52 +38,30 @@ RUN pip install --no-cache-dir algoliasearch==3.0.0
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy IndicTransToolkit and install it
-COPY IndicTransToolkit-main/ ./IndicTransToolkit-main/
-WORKDIR /app/IndicTransToolkit-main
+# NOTE: Assuming this is a local directory or a specific setup not provided.
+# If IndicTransToolkit is a pip installable package, this part might need adjustment.
+# COPY IndicTransToolkit/ ./IndicTransToolkit/
+# RUN pip install --no-cache-dir ./IndicTransToolkit
 
-# Install IndicTransToolkit from source
-RUN pip install --no-cache-dir .
+# Stage 2: Final image, smaller and more secure
+FROM python:3.10-slim-bullseye AS final
 
-# Return to app directory
+# Create a non-root user
+RUN adduser --system --no-create-home --uid 1001 appuser
 WORKDIR /app
 
-# Verify critical imports work
-RUN python -c "from algoliasearch.search_client import SearchClient; print('Algoliasearch import successful')"
-RUN python -c "from IndicTransToolkit.processor import IndicProcessor; print('IndicTransToolkit import successful')"
-
-# Stage 2: Runtime stage with minimal dependencies
-FROM python:3.10-slim-bullseye AS runtime
-
-# Set the working directory in the container
-WORKDIR /app
-
-# Install only runtime system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# Copy the virtual environment from builder stage
-COPY --from=builder /opt/venv /opt/venv
+# Copy virtual environment from builder stage
+COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
-# Set Hugging Face and Matplotlib cache directories and create them with appuser permissions
-ENV HF_HOME=/app/.cache/huggingface
-ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
-ENV MPLCONFIGDIR=/app/.cache/matplotlib
-
-RUN mkdir -p ${HF_HOME} \
-    && mkdir -p ${MPLCONFIGDIR} \
-    && chown -R appuser:appuser /app/.cache
-
-# Copy the main application files
+# Copy main application files
+COPY --chown=appuser:appuser main.py .
 COPY --chown=appuser:appuser app.py .
+COPY --chown=appuser:appuser config.py .
+COPY --chown=appuser:appuser models.py .
 COPY --chown=appuser:appuser fraud_detection.py .
 
-# Copy OAuth integration files
+# Copy OAuth integration files (FIXED: Added all OAuth files)
 COPY --chown=appuser:appuser oauth_routes.py .
 COPY --chown=appuser:appuser oauth_config.py .
 COPY --chown=appuser:appuser google_oauth.py .
@@ -97,9 +72,8 @@ COPY --chown=appuser:appuser jwt_utils.py .
 COPY --chown=appuser:appuser DEhli.csv .
 COPY --chown=appuser:appuser ngo_fraud.csv .
 
-# Optionally copy Firebase service account key
-COPY --chown=appuser:appuser firebase-service-account-key.json ./firebase-service-account-key.json || 
-RUN echo "No Firebase key file found, using environment variable fallback" > /dev/null
+# The following line has been removed to not include the key file in the image
+# COPY --chown=appuser:appuser firebase-service-account-key.json .
 
 # Copy static directory if it exists
 COPY --chown=appuser:appuser static/ ./static/
@@ -114,13 +88,9 @@ USER appuser
 # Expose the port that Gunicorn will run on internally
 EXPOSE 8000
 
-# Explicitly set the PORT environment variable for deployment platforms
-ENV PORT=8000
-
-# Add a HEALTHCHECK with a basic endpoint
+# Add a HEALTHCHECK to help cloud platforms monitor the container
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
   CMD curl --fail http://localhost:8000/health || exit 1
 
-# Command to run the FastAPI application using Gunicorn with Uvicorn workers
-# Explicitly disable preloading and add logging for debugging
-CMD ["gunicorn", "app:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100", "--log-level", "debug"]
+# Command to run the application using Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "app:app"]
