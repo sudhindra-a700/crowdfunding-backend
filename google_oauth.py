@@ -38,15 +38,8 @@ class GoogleOAuthHandler:
         # Store state in session (you might want to use Redis or database in production)
         request.session["oauth_state"] = state
 
-        # Create OAuth2 session using the oauth_config method
-        oauth_session = self.oauth_config.create_google_oauth_session(state)
-        
-        # Generate authorization URL
-        authorization_url, _ = oauth_session.authorization_url(
-            self.oauth_config.google_authorization_url,
-            access_type="offline",
-            prompt="select_account"
-        )
+        # ✅ FIXED: Use oauth_config helper method instead of manual OAuth2Session
+        authorization_url = self.oauth_config.get_google_auth_url(state)
 
         return RedirectResponse(url=authorization_url)
 
@@ -67,17 +60,9 @@ class GoogleOAuthHandler:
                 detail="Invalid or expired state token."
             )
 
-        # Create OAuth2 session
-        oauth_session = self.oauth_config.create_google_oauth_session(state)
-        
-        # Exchange authorization code for tokens
+        # ✅ FIXED: Use oauth_config helper method for token exchange
         try:
-            token = oauth_session.fetch_token(
-                self.oauth_config.google_token_url,
-                authorization_response=str(request.url),
-                client_id=self.oauth_config.google_client_id,
-                client_secret=self.oauth_config.google_client_secret
-            )
+            token = self.oauth_config.exchange_google_code_for_token(code, state)
         except Exception as e:
             logger.error(f"Error fetching Google token: {e}")
             raise HTTPException(
@@ -153,7 +138,7 @@ class GoogleOAuthHandler:
 # Create global instance
 google_oauth_handler = GoogleOAuthHandler()
 
-# ✅ FIXED: Export the exact function names that oauth_routes.py expects
+# ✅ Export the exact function names that oauth_routes.py expects
 def get_google_oauth_handler():
     """Get the Google OAuth handler instance"""
     return google_oauth_handler
