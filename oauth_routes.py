@@ -9,10 +9,11 @@ from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from google_oauth import get_google_oauth_handler
-from facebook_oauth import get_facebook_oauth_handler
+from google_oauth import get_google_oauth_handler, google_callback_route, google_login_route
+from facebook_oauth import get_facebook_oauth_handler, facebook_callback_route, facebook_login_route
 from jwt_utils import get_jwt_manager
 from oauth_config import get_oauth_config
+from firebase_admin import auth, firestore  # Import Firebase Admin SDK
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class TokenResponse(BaseModel):
     token_type: str
     expires_in: int
     refresh_token: Optional[str] = None
+    firebase_custom_token: Optional[str] = None # Added for Firebase integration
 
 class OAuthStatusResponse(BaseModel):
     google_available: bool
@@ -49,89 +51,70 @@ class OAuthStatusResponse(BaseModel):
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
     """Get current user from JWT token"""
     jwt_manager = get_jwt_manager()
-    try:
-        user_data = jwt_manager.get_user_from_token(credentials.credentials)
-        return user_data
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get current user: {e}")
+    user_info = jwt_manager.get_user_from_token(credentials.credentials)
+    
+    if not user_info:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"}
+            detail="Invalid or expired authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-
-# OAuth status endpoint
-@oauth_router.get("/status", response_model=OAuthStatusResponse)
-async def oauth_status():
-    """Get OAuth providers availability status"""
-    oauth_config = get_oauth_config()
     
-    return OAuthStatusResponse(
-        google_available=oauth_config.is_google_configured,
-        facebook_available=oauth_config.is_facebook_configured,
-        message="OAuth providers status"
-    )
+    return user_info
 
-# Google OAuth routes
-@oauth_router.get("/google")
+# --- OAuth Routes ---
+
+# Login endpoints
+@oauth_router.get("/google/login")
 async def google_login(request: Request):
-    """Initiate Google OAuth login"""
-    google_handler = get_google_oauth_handler()
-    return google_handler.initiate_google_login(request)
+    """Initiate Google OAuth login flow"""
+    return google_login_route(request)
 
-@oauth_router.get("/google/callback", response_model=TokenResponse)
+@oauth_router.get("/facebook/login")
+async def facebook_login(request: Request):
+    """Initiate Facebook OAuth login flow"""
+    return facebook_login_route(request)
+
+# Callback endpoints
+@oauth_router.get("/google/callback")
 async def google_callback(
     request: Request,
-    code: str = Query(..., description="Authorization code from Google"),
-    state: str = Query(..., description="State parameter for security")
-):
-    """Handle Google OAuth callback"""
-    from google_oauth import google_callback_route
-    return await google_callback_route(request, code, state)
+    code: str,
+    state: str,
+    firebase_auth_client: Any = Depends(lambda: auth.get_auth()),
+    firestore_db: firestore.Client = Depends(lambda: firestore.client())
+) -> TokenResponse:
+    """Handle Google OAuth callback and return tokens"""
+    return await google_callback_route(request, code, state, firebase_auth_client, firestore_db)
 
-# Facebook OAuth routes
-@oauth_router.get("/facebook")
-async def facebook_login(request: Request):
-    """Initiate Facebook OAuth login"""
-    facebook_handler = get_facebook_oauth_handler()
-    return facebook_handler.initiate_facebook_login(request)
-
-@oauth_router.get("/facebook/callback", response_model=TokenResponse)
+@oauth_router.get("/facebook/callback")
 async def facebook_callback(
     request: Request,
-    code: str = Query(..., description="Authorization code from Facebook"),
-    state: str = Query(..., description="State parameter for security")
-):
-    """Handle Facebook OAuth callback"""
-    from facebook_oauth import facebook_callback_route
-    return await facebook_callback_route(request, code, state)
+    code: str,
+    state: str,
+    firebase_auth_client: Any = Depends(lambda: auth.get_auth()),
+    firestore_db: firestore.Client = Depends(lambda: firestore.client())
+) -> TokenResponse:
+    """Handle Facebook OAuth callback and return tokens"""
+    return await facebook_callback_route(request, code, state, firebase_auth_client, firestore_db)
 
-# User profile endpoint
-@oauth_router.get("/profile", response_model=UserProfileResponse)
-async def get_user_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Get current user profile"""
-    return UserProfileResponse(
-        id=current_user.get("id"),
-        email=current_user.get("email"),
-        name=current_user.get("name"),
-        picture=current_user.get("picture"),
-        provider=current_user.get("provider"),
-        provider_id=current_user.get("provider_id")
+
+@oauth_router.get("/status", response_model=OAuthStatusResponse)
+async def get_oauth_status() -> OAuthStatusResponse:
+    """Check if OAuth providers are configured"""
+    config = get_oauth_config()
+    return OAuthStatusResponse(
+        google_available=config.is_google_configured,
+        facebook_available=config.is_facebook_configured,
+        message="OAuth providers status retrieved successfully"
     )
 
-# Token refresh endpoint
 @oauth_router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(request: TokenRefreshRequest):
-    """Refresh access token using refresh token"""
-    jwt_manager = get_jwt_manager()
-    
+async def refresh_token(request: Request, refresh_request: TokenRefreshRequest) -> TokenResponse:
+    """Refresh an access token using a refresh token"""
     try:
-        # Verify refresh token and get user ID
-        user_id = jwt_manager.verify_refresh_token(request.refresh_token)
-        
-        # For now, we'll need to store user data to recreate the token
+        # In a real application, you would use the refresh token to get a new access token
+        # You'll need to store user data to recreate the token
         # In a real application, you'd fetch user data from database
         # This is a simplified implementation
         raise HTTPException(
@@ -171,4 +154,3 @@ async def test_protected_route(current_user: Dict[str, Any] = Depends(get_curren
 def get_oauth_router() -> APIRouter:
     """Get the OAuth router for inclusion in main app"""
     return oauth_router
-
