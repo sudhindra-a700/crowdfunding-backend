@@ -297,6 +297,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Import and include OAuth router
+from oauth_routes import oauth_router
+app.include_router(oauth_router)
+
 # Health check endpoint with Firebase connectivity test
 @app.get("/health")
 async def health_check():
