@@ -174,24 +174,112 @@ def send_notification_safely(token: str, title: str, body: str) -> bool:
 def initialize_firebase():
     """
     Initialize Firebase Admin SDK with proper error handling
+    Supports multiple credential sources for different environments
     """
+    
+    if firebase_admin._apps:
+        # Firebase already initialized
+        logging.info("Firebase Admin SDK already initialized")
+        return firestore.client()
+    
     try:
-        if not firebase_admin._apps:
-            # Check if running in production with service account key
-            if os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'):
-                service_account_info = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'))
-                cred = credentials.Certificate(service_account_info)
-            else:
-                # Development mode - use service account file
-                cred = credentials.Certificate('path/to/serviceAccountKey.json')
+        # Method 1: Individual environment variables (Recommended for production)
+        if os.getenv('FIREBASE_PROJECT_ID'):
+            logging.info("Initializing Firebase with environment variables...")
             
+            # Construct credentials dictionary from environment variables
+            cred_dict = {
+                "type": os.getenv('FIREBASE_TYPE', 'service_account'),
+                "project_id": os.getenv('FIREBASE_PROJECT_ID'),
+                "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID'),
+                "private_key": os.getenv('FIREBASE_PRIVATE_KEY', '').replace('\\n', '\n'),
+                "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
+                "client_id": os.getenv('FIREBASE_CLIENT_ID'),
+                "auth_uri": os.getenv('FIREBASE_AUTH_URI', 'https://accounts.google.com/o/oauth2/auth'),
+                "token_uri": os.getenv('FIREBASE_TOKEN_URI', 'https://oauth2.googleapis.com/token'),
+                "auth_provider_x509_cert_url": os.getenv('FIREBASE_AUTH_PROVIDER_X509_CERT_URL', 'https://www.googleapis.com/oauth2/v1/certs'),
+                "client_x509_cert_url": os.getenv('FIREBASE_CLIENT_X509_CERT_URL')
+            }
+            
+            # Validate required fields
+            required_fields = ['project_id', 'private_key', 'client_email']
+            missing_fields = [field for field in required_fields if not cred_dict.get(field)]
+            
+            if missing_fields:
+                raise ValueError(f"Missing required Firebase environment variables: {missing_fields}")
+            
+            cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
-            logging.info("Firebase Admin SDK initialized successfully")
+            logging.info("✅ Firebase Admin SDK initialized successfully with environment variables")
+            
+        # Method 2: Base64 encoded JSON (Alternative for production)
+        elif os.getenv('FIREBASE_CREDENTIALS_BASE64'):
+            logging.info("Initializing Firebase with base64 encoded credentials...")
+            
+            import base64
+            encoded_creds = os.getenv('FIREBASE_CREDENTIALS_BASE64')
+            decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
+            cred_dict = json.loads(decoded_creds)
+            
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            logging.info("✅ Firebase Admin SDK initialized successfully with base64 credentials")
+            
+        # Method 3: Service account key from environment variable (JSON string)
+        elif os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'):
+            logging.info("Initializing Firebase with service account key...")
+            
+            service_account_info = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'))
+            cred = credentials.Certificate(service_account_info)
+            firebase_admin.initialize_app(cred)
+            logging.info("✅ Firebase Admin SDK initialized successfully with service account key")
+            
+        # Method 4: Local file (Development only)
+        elif os.path.exists('serviceAccountKey.json'):
+            logging.info("Initializing Firebase with local service account file...")
+            
+            cred = credentials.Certificate('serviceAccountKey.json')
+            firebase_admin.initialize_app(cred)
+            logging.info("✅ Firebase Admin SDK initialized successfully with local file")
+            
+        else:
+            # No credentials found - provide helpful error message
+            error_msg = """
+            ❌ No Firebase credentials found. Please configure one of the following:
+            
+            Option 1 (Recommended): Individual environment variables
+            - FIREBASE_PROJECT_ID
+            - FIREBASE_PRIVATE_KEY_ID  
+            - FIREBASE_PRIVATE_KEY
+            - FIREBASE_CLIENT_EMAIL
+            - FIREBASE_CLIENT_ID
+            - FIREBASE_CLIENT_X509_CERT_URL
+            
+            Option 2: Base64 encoded credentials
+            - FIREBASE_CREDENTIALS_BASE64
+            
+            Option 3: JSON string
+            - FIREBASE_SERVICE_ACCOUNT_KEY
+            
+            Option 4: Local file (development only)
+            - serviceAccountKey.json in project root
+            """
+            
+            logging.error(error_msg)
+            raise ValueError("No Firebase credentials configured. See logs for configuration options.")
+            
+        return firestore.client()
+        
+    except json.JSONDecodeError as e:
+        logging.error(f"❌ Failed to parse Firebase credentials JSON: {str(e)}")
+        raise ValueError(f"Invalid Firebase credentials format: {str(e)}")
+        
     except FirebaseError as e:
-        logging.error(f"Failed to initialize Firebase: {e.code} - {e.message}")
+        logging.error(f"❌ Firebase initialization failed: {e.code} - {e.message}")
         raise e
+        
     except Exception as e:
-        logging.error(f"Unexpected error initializing Firebase: {str(e)}")
+        logging.error(f"❌ Unexpected error initializing Firebase: {str(e)}")
         raise e
 
 # Call initialization
