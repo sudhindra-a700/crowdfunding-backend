@@ -156,19 +156,23 @@ class FacebookOAuthHandler:
 # Create global instance
 facebook_oauth_handler = FacebookOAuthHandler()
 
-# Route functions
-async def initiate_facebook_login(request: Request) -> RedirectResponse:
-    """Initiate Facebook OAuth login flow"""
+# ✅ FIXED: Export the exact function names that oauth_routes.py expects
+def get_facebook_oauth_handler():
+    """Get the Facebook OAuth handler instance"""
+    return facebook_oauth_handler
+
+async def facebook_login_route(request: Request) -> RedirectResponse:
+    """Initiate Facebook OAuth login flow - matches oauth_routes.py import"""
     return facebook_oauth_handler.initiate_facebook_login(request)
 
-async def handle_facebook_callback(
+async def facebook_callback_route(
     request: Request,
     code: str,
     state: str,
     firebase_auth_client: auth.Client = Depends(lambda: auth),
     firestore_db: firestore.Client = Depends(lambda: firestore.client())
 ) -> TokenResponse:
-    """Handle Facebook OAuth callback and get tokens"""
+    """Handle Facebook OAuth callback - matches oauth_routes.py import"""
     return await facebook_oauth_handler.handle_facebook_callback(
         request, code, state, firebase_auth_client, firestore_db
     )
