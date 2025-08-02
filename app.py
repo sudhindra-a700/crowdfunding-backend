@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field
 # Firebase Admin SDK imports
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, messaging
-from firebase_admin.exceptions import FirebaseAppError
+# Removed the problematic import below as it was causing a boot-up error.
+# from firebase_admin.exceptions import FirebaseAppError
 
 # OAuth imports
 from oauth_routes import get_oauth_router
@@ -47,97 +48,109 @@ def setup_logging():
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     log_format = os.environ.get("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     logging.basicConfig(level=log_level, format=log_format, stream=sys.stdout)
-    # Set a higher level for libraries that are too verbose
-    logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
-    logging.getLogger("fastapi").setLevel(logging.INFO)
-    logging.getLogger("algoliasearch").setLevel(logging.WARNING)
-    return logging.getLogger("app")
+    # Silence verbose loggers if needed
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-logger = setup_logging()
+# Call logging setup
+setup_logging()
+logger = logging.getLogger(__name__)
 
-# --- Firebase Initialization ---
-def initialize_firebase_app():
-    """Initializes the Firebase Admin SDK using a base64 encoded service account key."""
-    # The key is passed as a base64 encoded JSON string to handle it safely in an environment variable.
-    firebase_key_base64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
-    if not firebase_key_base64:
-        logger.error("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 environment variable not set.")
-        return None
+# Load the .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger.info("Loaded environment variables from .env file.")
+except ImportError:
+    logger.warning("python-dotenv not installed. Skipping .env file loading.")
 
-    try:
-        # Decode the base64 string back to a JSON string
-        key_json_str = base64.b64decode(firebase_key_base64).decode('utf-8')
-        cred = credentials.Certificate(json.loads(key_json_str))
-        
-        # Check if an app is already initialized to avoid re-initialization errors
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred)
-            logger.info("Firebase Admin SDK initialized successfully.")
-        else:
-            logger.info("Firebase Admin SDK already initialized.")
-        return firebase_admin.get_app()
-    except FirebaseAppError as e:
-        logger.error(f"Failed to initialize Firebase Admin SDK: {e}")
-        return None
-    except (json.JSONDecodeError, base64.binascii.Error) as e:
-        logger.error(f"Failed to decode or parse Firebase service account key: {e}")
-        return None
+# Check for JWT secret key
+if not os.getenv("JWT_SECRET_KEY"):
+    logger.warning("JWT_SECRET_KEY not set. Generating a temporary key. This is NOT secure for production.")
+    os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(32)
 
-# FastAPI app setup
-app = FastAPI(
-    title="NGO Verification & Fraud Detection API",
-    description="An API to verify NGOs and detect potential fraudulent campaigns using a fine-tuned NLP model.",
-    version="1.0.0",
-)
+# Global variables
+app = FastAPI()
+db = None # Will be initialized in the lifespan event handler
+oauth_router = get_oauth_router()
+firebase_admin_app = None # Will be initialized in the lifespan event handler
+algolia_client = None
+algolia_index = None
 
-# --- Middleware ---
-# Session Middleware for OAuth flow
-app.add_middleware(SessionMiddleware, secret_key=secrets.token_urlsafe(32))
+# Add Session Middleware
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY", secrets.token_urlsafe(32)))
 
-# CORS Middleware for allowing cross-origin requests
-origins = os.getenv("CORS_ORIGINS", "*").split(',')
+# Configure CORS
+# In a production environment, you should restrict this to your frontend's domain.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"], # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allows all methods
+    allow_headers=["*"], # Allows all headers
 )
 
-# OAuth2PasswordBearer for token-based authentication
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# Pydantic models for request bodies
+class FraudPredictionRequest(BaseModel):
+    org_name: str
+    bio: str
+    follower_count: int = 0
+    post_count: int = 0
+    account_age_days: int = 0
+    engagement_rate: float = 0.0
+    recent_posts: Optional[str] = None
+    pan: Optional[str] = None
+    registration_type: Optional[str] = None
+    registration_number: Optional[str] = None
+    ngo_darpan_id: Optional[str] = None
+    fcra_number: Optional[str] = None
 
-# --- Event Handlers ---
+class FeedbackRequest(BaseModel):
+    prediction_id: str
+    user_feedback: int # 1 for correct, 0 for incorrect
+
+class OAuthStatusRequest(BaseModel):
+    code: str = Field(..., description="The authorization code from OAuth provider")
+    state: str = Field(..., description="The state token for CSRF protection")
+
+# Helper function to get Firebase admin app instance
+def get_firebase_app():
+    if firebase_admin_app is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Firebase is not initialized"
+        )
+    return firebase_admin_app
+
+# Include OAuth routes
+app.include_router(oauth_router)
+
+
+# FastAPI lifespan events
+# This is a better way to handle startup/shutdown tasks than the old `@app.on_event`
 @app.on_event("startup")
 async def startup_event():
-    """
-    Handles application startup events:
-    - Initialize Firebase Admin SDK.
-    - Load NGO Darpan data and fraud detection models.
-    - Setup Algolia search client.
-    - Create static directories.
-    """
-    logger.info("Application startup event started.")
-    
-    # Initialize Firebase Admin SDK
-    firebase_app = initialize_firebase_app()
-    if not firebase_app:
-        logger.error("Firebase application could not be initialized. Some features may not work.")
-        # Re-raise the exception to let Gunicorn handle it and fail the worker gracefully.
-        raise RuntimeError("Firebase initialization failed.")
+    """Application startup event handler"""
+    global db, firebase_admin_app, algolia_client, algolia_index
+    logger.info("Starting application startup event...")
 
     try:
-        logger.info("Loading fraud detection model and NGO Darpan data...")
-        load_ngo_darpan_data()
+        # Initialize Firebase Admin SDK
+        firebase_service_account_key_base64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64")
+        if firebase_service_account_key_base64:
+            service_account_info = json.loads(base64.b64decode(firebase_service_account_key_base64).decode('utf-8'))
+            cred = credentials.Certificate(service_account_info)
+            firebase_admin_app = firebase_admin.initialize_app(cred)
+            db = firestore.client(app=firebase_admin_app)
+            logger.info("Successfully initialized Firebase Admin SDK.")
+        else:
+            logger.warning("FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64 not found. Firebase Admin SDK will not be initialized.")
+
+        # Lazy load NLP model and NGO data
         load_fraud_detection_model()
-        logger.info("Models and data loaded successfully.")
-    except Exception as e:
-        logger.error(f"Error loading models or data: {e}", exc_info=True)
-        # Re-raise the exception to let Gunicorn handle it and fail the worker gracefully.
-        raise
+        load_ngo_darpan_data()
 
-    try:
+        # Initialize Algolia client if keys are available
         if ALGOLIA_AVAILABLE:
             algolia_app_id = os.getenv("ALGOLIA_APP_ID")
             algolia_api_key = os.getenv("ALGOLIA_API_KEY")
@@ -174,7 +187,80 @@ async def startup_event():
 
     logger.info("Application startup event completed. Ready to serve with OAuth support.")
 
-if __name__ == "__main__":
-    import uvicorn
-    # A simple way to run the app. In production, use Gunicorn with the `app` object directly.
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown event handler"""
+    # Clean up resources if necessary
+    logger.info("Application shutdown event initiated.")
+
+@app.get("/")
+async def read_root():
+    """Health check endpoint"""
+    return {"message": "HAVEN backend is running!"}
+
+@app.get("/health")
+async def health_check():
+    """Comprehensive health check endpoint"""
+    try:
+        # Check system health
+        cpu_usage = psutil.cpu_percent(interval=1)
+        mem = psutil.virtual_memory()
+        mem_usage = mem.percent
+
+        # Check Firebase connection (simplified, as it's initialized on startup)
+        firebase_status = "OK" if firebase_admin_app else "Uninitialized"
+
+        # Check Algolia connection (simplified)
+        algolia_status = "OK" if algolia_client else "Uninitialized or Config Error"
+
+        # Check model loading status
+        model_status = "Loaded" if load_fraud_detection_model() is not None else "Failed to Load"
+
+        return {
+            "status": "OK",
+            "message": "Service is healthy",
+            "system_metrics": {
+                "cpu_usage_percent": cpu_usage,
+                "memory_usage_percent": mem_usage
+            },
+            "dependencies": {
+                "firebase_admin": firebase_status,
+                "algolia_search": algolia_status,
+                "ml_model": model_status
+            },
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+
+@app.post("/predict-fraud")
+async def predict_fraud_endpoint(request: FraudPredictionRequest):
+    """API endpoint to predict fraud for a given organization."""
+    try:
+        # Pass the request data directly to the prediction function
+        fraud_score, explanation, plot_path, verification = predict_fraud(request.dict())
+
+        # Clean up old plots to prevent accumulation
+        if plot_path:
+            old_plots = list(Path("static/shap_plots").glob("shap_plot_*.png"))
+            if len(old_plots) > 20: # Keep a reasonable number of plots
+                for old_plot in sorted(old_plots, key=os.path.getmtime)[:-20]:
+                    os.remove(old_plot)
+
+        return {
+            "fraud_score": fraud_score,
+            "explanation": explanation,
+            "shap_plot_url": f"/static/{plot_path}" if plot_path else None,
+            "verification_details": verification
+        }
+    except Exception as e:
+        logger.error(f"Prediction failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+@app.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """API endpoint to receive user feedback on a prediction."""
+    # In a real app, you would save this to a database
+    logger.info(f"Received feedback for prediction {request.prediction_id}: {request.user_feedback}")
+    return {"message": "Feedback received successfully"}
