@@ -1,5 +1,5 @@
 # Corrected app.py with all fixes for deployment issues
-# This version fixes Firebase imports, logging configuration, and cache directory issues
+# This version fixes Firebase imports, logging configuration, cache directory issues, and adds SessionMiddleware
 
 import os
 import sys
@@ -36,6 +36,7 @@ configure_cache_directories()
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.sessions import SessionMiddleware  # ✅ ADDED: SessionMiddleware import
 import uvicorn
 import json
 import logging
@@ -47,239 +48,207 @@ from firebase_admin import credentials, auth, firestore, messaging
 
 # CORRECTED: Use proper exception imports from firebase_admin.exceptions
 from firebase_admin.exceptions import (
-    FirebaseError,              # Base exception class
-    InvalidArgumentError,       # For invalid arguments
-    NotFoundError,             # For missing resources
-    PermissionDeniedError,     # For permission issues
-    UnauthenticatedError,      # For authentication failures
-    AlreadyExistsError,        # For duplicate resources
-    InternalError,             # For internal server errors
-    FailedPreconditionError,   # For state validation errors
-    ResourceExhaustedError     # For rate limiting
+    FirebaseError,           # Base exception class
+    InvalidArgumentError,    # For invalid arguments
+    NotFoundError,          # For missing resources
+    PermissionDeniedError,  # For permission issues
+    UnauthenticatedError,   # For authentication failures
+    AlreadyExistsError,     # For duplicate resources
+    InternalError,          # For internal server errors
+    FailedPreconditionError, # For state validation errors
+    ResourceExhaustedError  # For rate limiting
 )
 
 # FIXED: Logging setup function
 def setup_logging():
-    """
-    Fixed logging setup function that handles the format properly
-    """
-    # Get log level from environment variable, default to INFO
     log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-    
-    # Fix the logging format issue - use proper format string
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     
-    # Configure logging with proper parameters
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
         format=log_format,
         stream=sys.stdout,
-        force=True  # This ensures the configuration is applied even if logging was already configured
+        force=True
     )
-    
-    # Set specific loggers to appropriate levels
-    logging.getLogger('uvicorn').setLevel(logging.INFO)
-    logging.getLogger('uvicorn.access').setLevel(logging.INFO)
-    logging.getLogger('gunicorn').setLevel(logging.INFO)
-    
-    logging.info("Logging configuration completed successfully")
 
 # Set up logging
 setup_logging()
+logger = logging.getLogger(__name__)
 
-# Example of proper exception handling in your Firebase operations
-def get_user_safely(uid: str) -> Optional[Dict[str, Any]]:
-    """
-    Example function showing proper Firebase exception handling
-    """
+# Safe Firebase functions with comprehensive error handling
+def get_user_safely(uid: str):
+    """Get user by UID with proper error handling"""
     try:
         user_record = auth.get_user(uid)
-        return {
-            "uid": user_record.uid,
-            "email": user_record.email,
-            "display_name": user_record.display_name
-        }
+        return user_record
     except NotFoundError:
-        # Handle user not found specifically
-        logging.warning(f"User with UID {uid} not found")
+        logger.warning(f"User not found: {uid}")
         return None
-    except PermissionDeniedError as e:
-        # Handle permission issues
-        logging.error(f"Permission denied for user {uid}: {e.message}")
-        raise HTTPException(status_code=403, detail="Access denied")
-    except UnauthenticatedError as e:
-        # Handle authentication issues
-        logging.error(f"Authentication failed: {e.message}")
-        raise HTTPException(status_code=401, detail="Authentication required")
+    except InvalidArgumentError as e:
+        logger.error(f"Invalid UID format: {uid}, error: {e}")
+        return None
     except FirebaseError as e:
-        # Handle any other Firebase errors
-        logging.error(f"Firebase error: {e.code} - {e.message}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Firebase error getting user {uid}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error getting user {uid}: {e}")
+        return None
 
-def create_user_safely(email: str, password: str) -> Optional[Dict[str, Any]]:
-    """
-    Example function for creating users with proper error handling
-    """
+def create_user_safely(email: str, password: str, display_name: str = None):
+    """Create user with proper error handling"""
     try:
         user_record = auth.create_user(
             email=email,
-            password=password
+            password=password,
+            display_name=display_name
         )
-        return {
-            "uid": user_record.uid,
-            "email": user_record.email
-        }
+        logger.info(f"Successfully created user: {user_record.uid}")
+        return user_record
     except AlreadyExistsError:
-        # Handle user already exists
-        logging.warning(f"User with email {email} already exists")
-        raise HTTPException(status_code=409, detail="User already exists")
+        logger.warning(f"User already exists: {email}")
+        return None
     except InvalidArgumentError as e:
-        # Handle invalid input
-        logging.error(f"Invalid argument: {e.message}")
-        raise HTTPException(status_code=400, detail="Invalid input data")
+        logger.error(f"Invalid user data: {e}")
+        return None
     except FirebaseError as e:
-        # Handle any other Firebase errors
-        logging.error(f"Firebase error creating user: {e.code} - {e.message}")
-        raise HTTPException(status_code=500, detail="Failed to create user")
+        logger.error(f"Firebase error creating user: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error creating user: {e}")
+        return None
 
-def send_notification_safely(token: str, title: str, body: str) -> bool:
-    """
-    Example function for sending notifications with proper error handling
-    """
+def send_notification_safely(token: str, title: str, body: str):
+    """Send notification with proper error handling"""
     try:
         message = messaging.Message(
-            notification=messaging.Notification(
-                title=title,
-                body=body
-            ),
+            notification=messaging.Notification(title=title, body=body),
             token=token
         )
         response = messaging.send(message)
-        logging.info(f"Successfully sent message: {response}")
-        return True
+        logger.info(f"Successfully sent message: {response}")
+        return response
     except InvalidArgumentError as e:
-        # Handle invalid token or message format
-        logging.error(f"Invalid message format: {e.message}")
-        return False
-    except ResourceExhaustedError as e:
-        # Handle rate limiting
-        logging.error(f"Rate limit exceeded: {e.message}")
-        return False
+        logger.error(f"Invalid message data: {e}")
+        return None
     except FirebaseError as e:
-        # Handle any other Firebase errors
-        logging.error(f"Firebase messaging error: {e.code} - {e.message}")
-        return False
+        logger.error(f"Firebase error sending notification: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error sending notification: {e}")
+        return None
 
-# Initialize Firebase Admin SDK
 def initialize_firebase():
-    """
-    Initialize Firebase Admin SDK with proper error handling
-    Supports multiple credential sources for different environments
-    """
-    
-    if firebase_admin._apps:
-        # Firebase already initialized
-        logging.info("Firebase Admin SDK already initialized")
-        return firestore.client()
-    
+    """Initialize Firebase with multiple credential sources and comprehensive error handling"""
     try:
-        # Method 1: Individual environment variables (Recommended for production)
-        if os.getenv('FIREBASE_PROJECT_ID'):
-            logging.info("Initializing Firebase with environment variables...")
+        # Check if Firebase is already initialized
+        try:
+            firebase_admin.get_app()
+            logger.info("✅ Firebase Admin SDK already initialized")
+            return firestore.client()
+        except ValueError:
+            # Firebase not initialized, proceed with initialization
+            pass
+        
+        # Method 1: Environment variables (recommended for production)
+        if all(os.getenv(key) for key in ['FIREBASE_PROJECT_ID', 'FIREBASE_PRIVATE_KEY', 'FIREBASE_CLIENT_EMAIL']):
+            logger.info("Initializing Firebase with environment variables...")
             
-            # Construct credentials dictionary from environment variables
+            # Get credentials from environment variables
+            project_id = os.getenv('FIREBASE_PROJECT_ID')
+            private_key = os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n')
+            client_email = os.getenv('FIREBASE_CLIENT_EMAIL')
+            
+            # Create credentials dictionary
             cred_dict = {
-                "type": os.getenv('FIREBASE_TYPE', 'service_account'),
-                "project_id": os.getenv('FIREBASE_PROJECT_ID'),
-                "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID'),
-                "private_key": os.getenv('FIREBASE_PRIVATE_KEY', '').replace('\\n', '\n'),
-                "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
-                "client_id": os.getenv('FIREBASE_CLIENT_ID'),
-                "auth_uri": os.getenv('FIREBASE_AUTH_URI', 'https://accounts.google.com/o/oauth2/auth'),
-                "token_uri": os.getenv('FIREBASE_TOKEN_URI', 'https://oauth2.googleapis.com/token'),
-                "auth_provider_x509_cert_url": os.getenv('FIREBASE_AUTH_PROVIDER_X509_CERT_URL', 'https://www.googleapis.com/oauth2/v1/certs'),
-                "client_x509_cert_url": os.getenv('FIREBASE_CLIENT_X509_CERT_URL')
+                "type": "service_account",
+                "project_id": project_id,
+                "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID', ''),
+                "private_key": private_key,
+                "client_email": client_email,
+                "client_id": os.getenv('FIREBASE_CLIENT_ID', ''),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{client_email}"
             }
             
             # Validate required fields
             required_fields = ['project_id', 'private_key', 'client_email']
             missing_fields = [field for field in required_fields if not cred_dict.get(field)]
-            
             if missing_fields:
-                raise ValueError(f"Missing required Firebase environment variables: {missing_fields}")
+                raise ValueError(f"Missing required Firebase credentials: {missing_fields}")
             
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
-            logging.info("✅ Firebase Admin SDK initialized successfully with environment variables")
-            
-        # Method 2: Base64 encoded JSON (Alternative for production)
+            logger.info("✅ Firebase Admin SDK initialized successfully with environment variables")
+        
+        # Method 2: Base64 encoded credentials
         elif os.getenv('FIREBASE_CREDENTIALS_BASE64'):
-            logging.info("Initializing Firebase with base64 encoded credentials...")
-            
+            logger.info("Initializing Firebase with base64 credentials...")
             import base64
+            
             encoded_creds = os.getenv('FIREBASE_CREDENTIALS_BASE64')
             decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
             cred_dict = json.loads(decoded_creds)
             
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
-            logging.info("✅ Firebase Admin SDK initialized successfully with base64 credentials")
-            
+            logger.info("✅ Firebase Admin SDK initialized successfully with base64 credentials")
+        
         # Method 3: Service account key from environment variable (JSON string)
         elif os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'):
-            logging.info("Initializing Firebase with service account key...")
+            logger.info("Initializing Firebase with service account key...")
             
             service_account_info = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'))
             cred = credentials.Certificate(service_account_info)
             firebase_admin.initialize_app(cred)
-            logging.info("✅ Firebase Admin SDK initialized successfully with service account key")
-            
+            logger.info("✅ Firebase Admin SDK initialized successfully with service account key")
+        
         # Method 4: Local file (Development only)
         elif os.path.exists('serviceAccountKey.json'):
-            logging.info("Initializing Firebase with local service account file...")
+            logger.info("Initializing Firebase with local service account file...")
             
             cred = credentials.Certificate('serviceAccountKey.json')
             firebase_admin.initialize_app(cred)
-            logging.info("✅ Firebase Admin SDK initialized successfully with local file")
-            
+            logger.info("✅ Firebase Admin SDK initialized successfully with local file")
+        
         else:
             # No credentials found - provide helpful error message
             error_msg = """
-            ❌ No Firebase credentials found. Please configure one of the following:
-            
-            Option 1 (Recommended): Individual environment variables
-            - FIREBASE_PROJECT_ID
-            - FIREBASE_PRIVATE_KEY_ID  
-            - FIREBASE_PRIVATE_KEY
-            - FIREBASE_CLIENT_EMAIL
-            - FIREBASE_CLIENT_ID
-            - FIREBASE_CLIENT_X509_CERT_URL
-            
-            Option 2: Base64 encoded credentials
-            - FIREBASE_CREDENTIALS_BASE64
-            
-            Option 3: JSON string
-            - FIREBASE_SERVICE_ACCOUNT_KEY
-            
-            Option 4: Local file (development only)
-            - serviceAccountKey.json in project root
-            """
-            
-            logging.error(error_msg)
+❌ No Firebase credentials found. Please configure one of the following:
+
+Option 1 (Recommended): Individual environment variables
+- FIREBASE_PROJECT_ID
+- FIREBASE_PRIVATE_KEY_ID
+- FIREBASE_PRIVATE_KEY
+- FIREBASE_CLIENT_EMAIL
+- FIREBASE_CLIENT_ID
+- FIREBASE_CLIENT_X509_CERT_URL
+
+Option 2: Base64 encoded credentials
+- FIREBASE_CREDENTIALS_BASE64
+
+Option 3: JSON string
+- FIREBASE_SERVICE_ACCOUNT_KEY
+
+Option 4: Local file (development only)
+- serviceAccountKey.json in project root
+"""
+            logger.error(error_msg)
             raise ValueError("No Firebase credentials configured. See logs for configuration options.")
-            
+        
         return firestore.client()
-        
+    
     except json.JSONDecodeError as e:
-        logging.error(f"❌ Failed to parse Firebase credentials JSON: {str(e)}")
+        logger.error(f"❌ Failed to parse Firebase credentials JSON: {str(e)}")
         raise ValueError(f"Invalid Firebase credentials format: {str(e)}")
-        
+    
     except FirebaseError as e:
-        logging.error(f"❌ Firebase initialization failed: {e.code} - {e.message}")
+        logger.error(f"❌ Firebase initialization failed: {e.code} - {e.message}")
         raise e
-        
+    
     except Exception as e:
-        logging.error(f"❌ Unexpected error initializing Firebase: {str(e)}")
+        logger.error(f"❌ Unexpected error initializing Firebase: {str(e)}")
         raise e
 
 # Call initialization
@@ -297,6 +266,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ✅ ADDED: SessionMiddleware for OAuth state management
+app.add_middleware(
+    SessionMiddleware, 
+    secret_key=os.getenv("SESSION_SECRET_KEY", "UpLvYLpd2ZdXEVyiGSQmXS9DMQVGLB2dLvc6twgyJX8"),
+    max_age=3600,  # Session timeout in seconds (1 hour)
+    same_site="lax",  # CSRF protection
+    https_only=False  # Set to True in production with HTTPS (Render handles HTTPS termination)
+)
+
 # Import and include OAuth router
 from oauth_routes import oauth_router
 app.include_router(oauth_router)
@@ -310,14 +288,14 @@ async def health_check():
     try:
         # Test Firebase connectivity by attempting to get a non-existent user
         # This will throw NotFoundError if Firebase is working correctly
-        auth.get_user("test-connectivity-check")
+        auth.get_user('test-connectivity-check')
         return {"status": "healthy", "firebase": "connected"}
     except NotFoundError:
         # This is expected - Firebase is working correctly
         return {"status": "healthy", "firebase": "connected"}
     except FirebaseError as e:
         return {
-            "status": "unhealthy", 
+            "status": "unhealthy",
             "firebase": f"error: {e.message}",
             "error_code": e.code
         }
@@ -335,40 +313,59 @@ async def get_user(uid: str):
         raise HTTPException(status_code=404, detail="User not found")
 
 @app.post("/user")
-async def create_user(user_data: dict):
+async def create_user(email: str, password: str, display_name: str = None):
     """
-    Create new user with proper error handling
+    Create a new user with proper error handling
     """
-    email = user_data.get("email")
-    password = user_data.get("password")
-    
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email and password required")
-    
-    return create_user_safely(email, password)
+    user_data = create_user_safely(email, password, display_name)
+    if user_data:
+        return {"uid": user_data.uid, "email": user_data.email}
+    else:
+        raise HTTPException(status_code=400, detail="Failed to create user")
 
-# Add any additional API endpoints here...
+@app.post("/notification")
+async def send_notification(token: str, title: str, body: str):
+    """
+    Send a push notification with proper error handling
+    """
+    result = send_notification_safely(token, title, body)
+    if result:
+        return {"message": "Notification sent successfully", "message_id": result}
+    else:
+        raise HTTPException(status_code=400, detail="Failed to send notification")
 
-# Optional: Add startup event to verify everything is working
+# Global exception handler for Firebase errors
+@app.exception_handler(FirebaseError)
+async def firebase_exception_handler(request: Request, exc: FirebaseError):
+    logger.error(f"Firebase error: {exc.code} - {exc.message}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Firebase error: {exc.message}", "error_code": exc.code}
+    )
+
+# Global exception handler for general exceptions
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unexpected error: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+# Startup event
 @app.on_event("startup")
 async def startup_event():
-    """
-    Startup event to verify all systems are working
-    """
-    logging.info("Starting Crowdfunding Backend API...")
-    logging.info("Cache directories configured")
-    logging.info("Firebase Admin SDK initialized")
-    logging.info("FastAPI application ready")
+    logger.info("🚀 Starting Crowdfunding Backend API...")
+    logger.info("✅ Firebase Admin SDK initialized successfully")
+    logger.info("✅ SessionMiddleware configured for OAuth")
+    logger.info("✅ Application startup complete")
+    logger.info("🎉 FastAPI application ready")
 
-# Optional: Add shutdown event for cleanup
+# Shutdown event
 @app.on_event("shutdown")
 async def shutdown_event():
-    """
-    Shutdown event for cleanup
-    """
-    logging.info("Shutting down Crowdfunding Backend API...")
+    logger.info("🛑 Shutting down Crowdfunding Backend API...")
 
-# For local development
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
