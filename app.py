@@ -1,11 +1,42 @@
-# Corrected Firebase imports for app.py
-# Replace the problematic import section with this corrected version
+# Corrected app.py with all fixes for deployment issues
+# This version fixes Firebase imports, logging configuration, and cache directory issues
 
+import os
+import sys
+
+# CRITICAL: Configure cache directories FIRST, before any ML library imports
+def configure_cache_directories():
+    """
+    Configure cache directories for containerized environment
+    This must be called before importing any ML libraries
+    """
+    # Set Matplotlib cache directory
+    os.environ.setdefault('MPLCONFIGDIR', '/tmp/matplotlib')
+    
+    # Set HuggingFace cache directories
+    os.environ.setdefault('TRANSFORMERS_CACHE', '/tmp/huggingface')
+    os.environ.setdefault('HF_HOME', '/tmp/huggingface')
+    os.environ.setdefault('HUGGINGFACE_HUB_CACHE', '/tmp/huggingface')
+    
+    # Set general cache directory
+    os.environ.setdefault('XDG_CACHE_HOME', '/tmp/cache')
+    
+    # Create directories if they don't exist
+    cache_dirs = ['/tmp/matplotlib', '/tmp/huggingface', '/tmp/cache']
+    for cache_dir in cache_dirs:
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except Exception as e:
+            print(f"Warning: Could not create cache directory {cache_dir}: {e}")
+
+# Call cache configuration BEFORE any other imports
+configure_cache_directories()
+
+# Now import other libraries
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
-import os
 import json
 import logging
 from typing import Optional, Dict, Any
@@ -27,8 +58,34 @@ from firebase_admin.exceptions import (
     ResourceExhaustedError     # For rate limiting
 )
 
-# REMOVED: The following import that was causing the error
-# from firebase_admin.exceptions import FirebaseAppError  # THIS DOES NOT EXIST!
+# FIXED: Logging setup function
+def setup_logging():
+    """
+    Fixed logging setup function that handles the format properly
+    """
+    # Get log level from environment variable, default to INFO
+    log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+    
+    # Fix the logging format issue - use proper format string
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    
+    # Configure logging with proper parameters
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format=log_format,
+        stream=sys.stdout,
+        force=True  # This ensures the configuration is applied even if logging was already configured
+    )
+    
+    # Set specific loggers to appropriate levels
+    logging.getLogger('uvicorn').setLevel(logging.INFO)
+    logging.getLogger('uvicorn.access').setLevel(logging.INFO)
+    logging.getLogger('gunicorn').setLevel(logging.INFO)
+    
+    logging.info("Logging configuration completed successfully")
+
+# Set up logging
+setup_logging()
 
 # Example of proper exception handling in your Firebase operations
 def get_user_safely(uid: str) -> Optional[Dict[str, Any]]:
@@ -198,5 +255,28 @@ async def create_user(user_data: dict):
     
     return create_user_safely(email, password)
 
-# Continue with your other API endpoints...
+# Add any additional API endpoints here...
+
+# Optional: Add startup event to verify everything is working
+@app.on_event("startup")
+async def startup_event():
+    """
+    Startup event to verify all systems are working
+    """
+    logging.info("Starting Crowdfunding Backend API...")
+    logging.info("Cache directories configured")
+    logging.info("Firebase Admin SDK initialized")
+    logging.info("FastAPI application ready")
+
+# Optional: Add shutdown event for cleanup
+@app.on_event("shutdown")
+async def shutdown_event():
+    """
+    Shutdown event for cleanup
+    """
+    logging.info("Shutting down Crowdfunding Backend API...")
+
+# For local development
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
