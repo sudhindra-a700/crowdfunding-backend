@@ -40,7 +40,7 @@ class TokenResponse(BaseModel):
     token_type: str
     expires_in: int
     refresh_token: Optional[str] = None
-    firebase_custom_token: Optional[str] = None # Added for Firebase integration
+    firebase_custom_token: Optional[str] = None  # Added for Firebase integration
 
 class OAuthStatusResponse(BaseModel):
     google_available: bool
@@ -68,12 +68,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 @oauth_router.get("/google/login")
 async def google_login(request: Request):
     """Initiate Google OAuth login flow"""
-    return google_login_route(request)
+    return await google_login_route(request)  # ✅ FIXED: Added await
 
 @oauth_router.get("/facebook/login")
 async def facebook_login(request: Request):
     """Initiate Facebook OAuth login flow"""
-    return facebook_login_route(request)
+    return await facebook_login_route(request)  # ✅ FIXED: Added await
 
 # Callback endpoints
 @oauth_router.get("/google/callback")
@@ -98,11 +98,10 @@ async def facebook_callback(
     """Handle Facebook OAuth callback and return tokens"""
     return await facebook_callback_route(request, code, state, firebase_auth_client, firestore_db)
 
-
 @oauth_router.get("/status", response_model=OAuthStatusResponse)
 async def get_oauth_status() -> OAuthStatusResponse:
     """Check if OAuth providers are configured"""
-    config = get_oauth_config()
+    config = get_oauth_config()  # ✅ This function is synchronous, no await needed
     return OAuthStatusResponse(
         google_available=config.is_google_configured,
         facebook_available=config.is_facebook_configured,
@@ -154,3 +153,4 @@ async def test_protected_route(current_user: Dict[str, Any] = Depends(get_curren
 def get_oauth_router() -> APIRouter:
     """Get the OAuth router for inclusion in main app"""
     return oauth_router
+
