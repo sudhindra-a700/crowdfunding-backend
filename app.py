@@ -23,8 +23,8 @@ from pydantic import BaseModel, Field
 # Firebase Admin SDK imports
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, messaging
-# Removed the problematic import below as it was causing a boot-up error.
-# from firebase_admin.exceptions import FirebaseAppError
+# Updated the import to use the general 'FirebaseError' to avoid a version-specific import error.
+from firebase_admin.exceptions import FirebaseError
 
 # OAuth imports
 from oauth_routes import get_oauth_router
@@ -116,6 +116,7 @@ class OAuthStatusRequest(BaseModel):
 # Helper function to get Firebase admin app instance
 def get_firebase_app():
     if firebase_admin_app is None:
+        # Replaced FirebaseAppError with the more general FirebaseError
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Firebase is not initialized"
