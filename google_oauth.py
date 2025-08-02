@@ -153,19 +153,23 @@ class GoogleOAuthHandler:
 # Create global instance
 google_oauth_handler = GoogleOAuthHandler()
 
-# Route functions
-async def initiate_google_login(request: Request) -> RedirectResponse:
-    """Initiate Google OAuth login flow"""
+# ✅ FIXED: Export the exact function names that oauth_routes.py expects
+def get_google_oauth_handler():
+    """Get the Google OAuth handler instance"""
+    return google_oauth_handler
+
+async def google_login_route(request: Request) -> RedirectResponse:
+    """Initiate Google OAuth login flow - matches oauth_routes.py import"""
     return google_oauth_handler.initiate_google_login(request)
 
-async def handle_google_callback(
+async def google_callback_route(
     request: Request,
     code: str,
     state: str,
     firebase_auth_client: auth.Client = Depends(lambda: auth),
     firestore_db: firestore.Client = Depends(lambda: firestore.client())
 ) -> TokenResponse:
-    """Handle Google OAuth callback and get tokens"""
+    """Handle Google OAuth callback - matches oauth_routes.py import"""
     return await google_oauth_handler.handle_google_callback(
         request, code, state, firebase_auth_client, firestore_db
     )
