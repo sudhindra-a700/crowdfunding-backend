@@ -39,101 +39,147 @@ class FacebookOAuthHandler:
         # Store state in session (you might want to use Redis or database in production)
         request.session["oauth_state"] = state
 
-        # Generate authorization URL using the oauth_config methods
-        authorize_url = self.oauth_config.get_facebook_auth_url(state)
-        return RedirectResponse(authorize_url)
+        # Generate authorization URL
+        authorization_url = self.oauth_config.facebook_client.get_authorization_url(
+            redirect_uri=self.oauth_config.facebook_callback_uri,
+            state=state,
+            scope="public_profile,email"
+        )
+
+        return RedirectResponse(url=authorization_url)
 
     async def handle_facebook_callback(
             self,
             request: Request,
             code: str,
             state: str,
-            firebase_auth_client: Any,  # Removed auth.Auth type hint
-            firestore_db: firestore.Client
+            firebase_auth_client: auth.Client = Depends(lambda: auth),
+            firestore_db: firestore.Client = Depends(lambda: firestore.client())
     ) -> TokenResponse:
-        """Handle Facebook OAuth callback and exchange code for token"""
-        if state != request.session.pop("oauth_state", None):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state parameter")
-
-        try:
-            # Use the oauth_config method to exchange code for token
-            token_response = self.oauth_config.exchange_facebook_code_for_token(code, state)
-            access_token = token_response["access_token"]
-            
-            # Get user info using the oauth_config method
-            user_info = self.oauth_config.get_facebook_user_info(access_token)
-            oauth_user = OAuthUser.from_facebook_data(user_info)
-
-            # Check for existing user by email or provider ID
-            try:
-                firebase_user = firebase_auth_client.get_user_by_email(oauth_user.email)
-                uid = firebase_user.uid
-                logger.info(f"Existing Firebase user found for email: {oauth_user.email}, UID: {uid}")
-            except auth.UserNotFoundError:
-                try:
-                    # Create Firebase user if not exists
-                    firebase_user = firebase_auth_client.create_user(
-                        email=oauth_user.email,
-                        email_verified=True,
-                        display_name=oauth_user.name,
-                        photo_url=oauth_user.picture,
-                        uid=oauth_user.id  # Use OAuth provider ID as Firebase UID
-                    )
-                    uid = firebase_user.uid
-                    logger.info(f"New Firebase user created with UID: {uid} from Facebook OAuth.")
-                except Exception as e:
-                    logger.error(f"Error creating Firebase user from Facebook OAuth: {e}", exc_info=True)
-                    # If UID from oauth_user.id already exists, try to get it
-                    if "already exists" in str(e):
-                        firebase_user = firebase_auth_client.get_user(oauth_user.id)
-                        uid = firebase_user.uid
-                        logger.info(f"Firebase user with UID {uid} already exists, proceeding with existing user.")
-                    else:
-                        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Firebase user creation failed.")
-
-            # Create or update user profile in Firestore
-            user_doc_ref = firestore_db.collection("users").document(uid)
-            user_data = {
-                "uid": uid,
-                "email": oauth_user.email,
-                "name": oauth_user.name,
-                "picture": oauth_user.picture,
-                "provider": oauth_user.provider,  # Fixed: removed .value since provider is already a string
-                "provider_id": oauth_user.provider_id,
-                "last_login": firestore.SERVER_TIMESTAMP
-            }
-            user_doc_ref.set(user_data, merge=True)
-            logger.info(f"Firestore profile updated/created for UID: {uid}")
-
-            # Create custom JWT token for frontend
-            custom_token = self.jwt_manager.create_access_token(user_data)
-            refresh_token = self.jwt_manager.create_refresh_token(uid)
-
-            return TokenResponse(
-                access_token=custom_token,
-                token_type="bearer",
-                expires_in=self.jwt_manager.expiration_hours * 3600,
-                refresh_token=refresh_token,
-                user_info=user_data  # Pass the user_data dictionary
+        """Handle Facebook OAuth callback and get tokens"""
+        # Validate state token
+        if not self.jwt_manager.verify_state_token(state, OAuthProvider.FACEBOOK):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired state token."
             )
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Facebook token exchange failed: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to exchange Facebook token.")
+        # Exchange authorization code for tokens
+        try:
+            token = await self.oauth_config.facebook_client.fetch_token(
+                url=self.oauth_config.facebook_token_uri,
+                authorization_response=str(request.url),
+                client_id=self.oauth_config.facebook_client_id,
+                client_secret=self.oauth_config.facebook_client_secret
+            )
         except Exception as e:
-            logger.error(f"Error during Facebook OAuth callback: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Facebook OAuth callback failed.")
+            logger.error(f"Error fetching Facebook token: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not exchange code for token."
+            )
+
+        # Get user info from Facebook
+        user_profile = await self.fetch_facebook_user_profile(token.get("access_token"))
+
+        # --- Firebase Integration ---
+        user_email = user_profile.get("email")
+        user_name = user_profile.get("name")
+        user_id = user_profile.get("id")
+        user_photo = f"https://graph.facebook.com/{user_id}/picture?type=large" # Construct photo URL
+
+        try:
+            # Check if a user with this email already exists
+            firebase_user = firebase_auth_client.get_user_by_email(user_email)
+            firebase_uid = firebase_user.uid
+            logger.info(f"Existing Firebase user found with UID: {firebase_uid}")
+        except auth.AuthError:
+            # If not, create a new Firebase user
+            firebase_user = firebase_auth_client.create_user(
+                email=user_email,
+                email_verified=True,
+                display_name=user_name,
+                photo_url=user_photo
+            )
+            firebase_uid = firebase_user.uid
+            logger.info(f"New Firebase user created with UID: {firebase_uid}")
+
+        # Generate a Firebase Custom Token for client-side authentication
+        firebase_custom_token = firebase_auth_client.create_custom_token(firebase_uid)
+
+        # Store or update user data in Firestore
+        user_doc_ref = firestore_db.collection("users").document(firebase_uid)
+        user_doc_data = {
+            "email": user_email,
+            "name": user_name,
+            "photo_url": user_photo,
+            "provider": OAuthProvider.FACEBOOK.value,
+            "last_login": firestore.SERVER_TIMESTAMP
+        }
+        user_doc_ref.set(user_doc_data, merge=True)
+        logger.info(f"User data for {firebase_uid} updated in Firestore.")
+
+        # Create a JWT for API access
+        jwt_access_token = self.jwt_manager.create_access_token({
+            "uid": firebase_uid,
+            "email": user_email,
+            "name": user_name,
+            "user_photo": user_photo
+        })
+        
+        # Create the TokenResponse object
+        response = TokenResponse(
+            access_token=jwt_access_token,
+            refresh_token=token.get("refresh_token"),
+            expires_in=token.get("expires_in", 3600),
+            user_info={
+                "uid": firebase_uid,
+                "email": user_email,
+                "name": user_name,
+                "photo_url": user_photo
+            },
+            firebase_custom_token=firebase_custom_token
+        )
+
+        return response
+
 
     async def fetch_facebook_user_profile(self, access_token: str) -> Dict[str, Any]:
-        """Fetch user profile from Facebook API"""
+        """Fetch user profile information from Facebook"""
+        profile_url = "https://graph.facebook.com/v19.0/me"
+        params = {
+            "fields": "id,name,email,picture",
+            "access_token": access_token
+        }
         try:
-            return self.oauth_config.get_facebook_user_info(access_token)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to fetch Facebook user profile: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch Facebook user profile.")
+            response = requests.get(profile_url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.error(f"Error fetching Facebook user profile: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not fetch user profile from Facebook."
+            )
 
 
-# The actual callback route, now with Firebase dependencies
+# Global instance of FacebookOAuthHandler
+facebook_oauth_handler = FacebookOAuthHandler()
+
+
+def get_facebook_oauth_handler() -> FacebookOAuthHandler:
+    """Dependency injector for FacebookOAuthHandler"""
+    return facebook_oauth_handler
+
+
+# FastAPI routes for Facebook OAuth
+async def facebook_login_route(request: Request):
+    """FastAPI route for initiating Facebook OAuth login"""
+    handler = get_facebook_oauth_handler()
+    return handler.initiate_facebook_login(request)
+
+
+# Added Firebase dependencies
 async def facebook_callback_route(
         request: Request,
         code: str,
@@ -158,13 +204,3 @@ async def facebook_profile_route(access_token: str) -> Dict[str, Any]:
     """FastAPI route for fetching Facebook user profile"""
     handler = get_facebook_oauth_handler()
     return await handler.fetch_facebook_user_profile(access_token)
-
-
-# Global instance of FacebookOAuthHandler
-facebook_oauth_handler = FacebookOAuthHandler()
-
-
-def get_facebook_oauth_handler() -> FacebookOAuthHandler:
-    """Get the global Facebook OAuth handler instance"""
-    return facebook_oauth_handler
-
