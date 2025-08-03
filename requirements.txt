@@ -1,69 +1,34 @@
-# HAVEN Backend Requirements - Final Fixed Version
-# All packages tested and verified for Python 3.11 compatibility
-# Includes missing dependencies that were causing import errors
-
-# Core FastAPI dependencies (verified Python 3.11)
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
-
-# Starlette dependencies (FIXED - was missing itsdangerous)
 starlette==0.27.0
 itsdangerous==2.1.2
-
-# Database and ORM (verified Python 3.11)
 sqlalchemy==2.0.23
 alembic==1.13.1
 psycopg2-binary==2.9.9
-
-# Authentication and Security (verified Python 3.11)
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 PyJWT==2.8.0
 cryptography<=41.0.8
-
-# OAuth Dependencies (verified Python 3.11)
 google-auth-oauthlib==1.1.0
 google-api-python-client==2.108.0
 authlib==1.2.1
-
-# HTTP and API clients (verified Python 3.11)
 requests==2.31.0
 httpx==0.25.2
 aiohttp==3.9.1
-
-# File handling and validation (verified Python 3.11)
 python-multipart==0.0.6
 python-dotenv==1.0.0
-
-# Email and notifications (verified Python 3.11)
 jinja2==3.1.2
-
-# Logging and monitoring (verified Python 3.11)
 structlog==23.2.0
-
-# Testing (verified Python 3.11)
 pytest==7.4.3
 pytest-asyncio==0.21.1
-
-# Utilities (verified Python 3.11)
 python-dateutil==2.8.2
 pytz==2023.3
-
-# JSON handling (verified Python 3.11)
 orjson==3.9.10
-
-# Basic NLP for term simplification (verified Python 3.11)
 nltk==3.8.1
-
-# Performance and caching (verified Python 3.11)
 redis==5.0.1
-
-# Development tools (verified Python 3.11)
 black==23.11.0
 isort==5.12.0
-
-# Production server (verified Python 3.11)
 gunicorn==21.2.0
 
