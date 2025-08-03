@@ -1,4 +1,9 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request
+# app.py
+# This is the complete, corrected code for your FastAPI backend,
+# incorporating the fixes for environment variable handling, CORS,
+# and adding the missing OAuth callback endpoint for both Google and Facebook.
+
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -17,6 +22,27 @@ import requests
 from instamojo_wrapper import Instamojo
 import pandas as pd
 import numpy as np
+from dotenv import load_dotenv  # Add this import
+
+# --- Environment Variable Loading ---
+# This loads variables from a .env file, which is essential for configuration.
+load_dotenv()
+
+# --- Environment Variable Configuration ---
+FRONTEND_URL = os.getenv("FRONTEND_BASE_URI", "http://localhost:8501")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+# Google OAuth
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+
+# Facebook OAuth
+FACEBOOK_CLIENT_ID = os.getenv("FACEBOOK_CLIENT_ID")
+FACEBOOK_CLIENT_SECRET = os.getenv("FACEBOOK_CLIENT_SECRET")
+FACEBOOK_REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI")
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -27,10 +53,17 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS middleware
+# --- CORS middleware ---
+# This is a critical fix. Instead of a wildcard, we specify allowed origins
+# to improve security and prevent connectivity issues with the frontend.
+origins = [
+    FRONTEND_URL,
+    "http://localhost",
+    "http://localhost:8501"
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,  # Changed from ["*"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,7 +71,7 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
-JWT_SECRET = os.environ.get("JWT_SECRET_KEY", "haven-secret-key-2024")
+JWT_SECRET = os.getenv("JWT_SECRET_KEY", "haven-secret-key-2024")
 JWT_ALGORITHM = "HS256"
 
 # Load and process CSV data
@@ -236,7 +269,9 @@ async def root():
             "campaigns": "/api/campaigns",
             "search": "/api/search",
             "categories": "/api/categories",
-            "trending": "/api/trending"
+            "trending": "/api/trending",
+            "google_oauth": "/auth/google/callback",
+            "facebook_oauth": "/auth/facebook/callback" # Added this endpoint
         }
     }
 
@@ -294,6 +329,10 @@ async def api_info():
             },
             "categories": {
                 "GET /api/categories": "List all campaign categories with counts"
+            },
+            "oauth": {
+                "GET /auth/google/callback": "Google OAuth callback endpoint",
+                "GET /auth/facebook/callback": "Facebook OAuth callback endpoint"
             }
         }
     }
@@ -508,6 +547,85 @@ async def get_platform_stats():
         "trending_count": len([c for c in CAMPAIGNS_DATA if c.get('is_trending', False)])
     }
 
+# --- OAuth Callback Endpoints ---
+@app.get("/auth/google/callback")
+async def google_auth_callback(code: str):
+    """
+    Handles the callback from the Google OAuth server.
+    Exchanges the authorization code for an access token.
+    """
+    if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Missing Google OAuth credentials. Please check your environment variables."
+        )
+
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    
+    try:
+        response = requests.post(token_url, data=data)
+        response.raise_for_status()
+        token_info = response.json()
+        
+        # Here you would process the token and redirect the user.
+        # For a full implementation, you would generate a JWT token and
+        # redirect to your frontend with this token as a query parameter.
+        
+        # Example redirect to frontend:
+        # return RedirectResponse(url=f"{FRONTEND_URL}/dashboard?token={jwt_token}")
+        
+        return {"message": "Google authentication successful", "token_info": token_info}
+    
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get Google token: {e}"
+        )
+
+@app.get("/auth/facebook/callback")
+async def facebook_auth_callback(code: str, request: Request):
+    """
+    Handles the callback from the Facebook OAuth server.
+    Exchanges the authorization code for an access token.
+    """
+    if not all([FACEBOOK_CLIENT_ID, FACEBOOK_CLIENT_SECRET, FACEBOOK_REDIRECT_URI]):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Missing Facebook OAuth credentials. Please check your environment variables."
+        )
+
+    token_url = "https://graph.facebook.com/v19.0/oauth/access_token"
+    data = {
+        "client_id": FACEBOOK_CLIENT_ID,
+        "client_secret": FACEBOOK_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": FACEBOOK_REDIRECT_URI,
+    }
+
+    try:
+        response = requests.get(token_url, params=data)
+        response.raise_for_status()
+        token_info = response.json()
+        
+        # Here you would process the token, get user info, and generate a JWT.
+        # Example redirect to frontend:
+        # return RedirectResponse(url=f"{FRONTEND_URL}/dashboard?token={jwt_token}")
+        
+        return {"message": "Facebook authentication successful", "token_info": token_info}
+    
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get Facebook token: {e}"
+        )
+
 # Custom 404 handler
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc: HTTPException):
@@ -524,6 +642,8 @@ async def not_found_handler(request: Request, exc: HTTPException):
                 "/api/search",
                 "/api/categories",
                 "/api/trending",
+                "/auth/google/callback",
+                "/auth/facebook/callback", # Added this endpoint
                 "/docs"
             ]
         }
@@ -532,4 +652,3 @@ async def not_found_handler(request: Request, exc: HTTPException):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
