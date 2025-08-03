@@ -19,7 +19,7 @@ nltk==3.8.1
 textstat==0.7.3
 beautifulsoup4==4.12.2
 lxml==4.9.3
-openpyxl==1.2.0
+openpyxl<=1.2.0
 python-dotenv==1.0.0
 email-validator==2.1.0
 pyjwt==2.8.0
