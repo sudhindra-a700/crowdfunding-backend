@@ -26,7 +26,7 @@ except ImportError:
     fraud_router = APIRouter(prefix="/fraud", tags=["fraud"])
 
 # Import our new translation and simplification services
-from complete_translation_api_routes import router as translation_router
+from translation_routes import router as translation_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
