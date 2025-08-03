@@ -1,7 +1,8 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict, Any
 import json
@@ -18,7 +19,9 @@ import base64
 app = FastAPI(
     title="HAVEN Crowdfunding API",
     description="Complete crowdfunding platform with OAuth, profiles, and verification",
-    version="2.0.0"
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # CORS middleware
@@ -266,6 +269,78 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Root endpoint - Fix for 404 on /
+@app.get("/")
+async def root():
+    """Root endpoint - API information"""
+    return {
+        "message": "Welcome to HAVEN Crowdfunding API",
+        "version": "2.0.0",
+        "status": "active",
+        "features": [
+            "OAuth Authentication",
+            "User Profiles",
+            "Document Verification", 
+            "Campaign Management",
+            "Donation Tracking"
+        ],
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "redoc": "/redoc",
+            "campaigns": "/api/campaigns",
+            "auth": "/api/auth/*",
+            "profiles": "/api/profile/*"
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Favicon endpoint - Fix for 404 on /favicon.ico
+@app.get("/favicon.ico")
+async def favicon():
+    """Favicon endpoint"""
+    # Return a simple response or redirect to a favicon URL
+    return JSONResponse(
+        status_code=204,
+        content=None,
+        headers={"Cache-Control": "public, max-age=86400"}
+    )
+
+# API Info endpoint
+@app.get("/api")
+async def api_info():
+    """API information endpoint"""
+    return {
+        "api": "HAVEN Crowdfunding Platform",
+        "version": "2.0.0",
+        "description": "Complete crowdfunding platform with OAuth, profiles, and verification",
+        "status": "operational",
+        "endpoints": {
+            "authentication": {
+                "oauth_url": "/api/auth/oauth/{provider}/url",
+                "oauth_callback": "/api/auth/oauth/callback", 
+                "login": "/api/auth/login",
+                "register": "/api/auth/register"
+            },
+            "profiles": {
+                "my_profile": "/api/profile/me",
+                "public_profile": "/api/profile/{user_id}",
+                "update_profile": "/api/profile/me [PUT]"
+            },
+            "verification": {
+                "upload_document": "/api/verification/upload",
+                "get_documents": "/api/verification/documents",
+                "requirements": "/api/verification/requirements"
+            },
+            "campaigns": {
+                "list_campaigns": "/api/campaigns",
+                "create_campaign": "/api/campaigns [POST]",
+                "search_campaigns": "/api/search"
+            }
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+
 # Health check
 @app.get("/health")
 async def health_check():
@@ -278,6 +353,12 @@ async def health_check():
             "profiles": "active",
             "verification": "active",
             "oauth": "active"
+        },
+        "database": {
+            "users": len(users_db),
+            "campaigns": len(campaigns_db),
+            "donations": len(donations_db),
+            "documents": len(documents_db)
         }
     }
 
@@ -653,7 +734,7 @@ async def get_verification_requirements(current_user: str = Depends(get_current_
     
     return requirements
 
-# Campaign endpoints (existing)
+# Campaign endpoints
 @app.get("/api/campaigns")
 async def get_campaigns():
     """Get all campaigns"""
@@ -721,6 +802,26 @@ async def search_campaigns(query: str, category: Optional[str] = None, limit: in
             results.append(campaign)
     
     return {"campaigns": results[:limit]}
+
+# Error handlers
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "message": f"The requested endpoint {request.url.path} was not found",
+            "available_endpoints": {
+                "root": "/",
+                "api_info": "/api", 
+                "health": "/health",
+                "docs": "/docs",
+                "campaigns": "/api/campaigns",
+                "auth": "/api/auth/*",
+                "profiles": "/api/profile/*"
+            }
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn
