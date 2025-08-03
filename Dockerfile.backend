@@ -1,92 +1,55 @@
-# Multi-stage Dockerfile for FastAPI Backend with OAuth Integration
-# Stage 1: Build stage with all build dependencies
-FROM python:3.10-slim-bullseye AS builder
+# HAVEN Crowdfunding Platform - Backend Dockerfile for Render
+# Optimized for translation and simplification services
 
-# Set the working directory in the container
+FROM python:3.11-slim
+
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies needed for building Python packages
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    git \
     curl \
-    pkg-config \
+    git \
+    libpq-dev \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file first to leverage Docker cache
+# Upgrade pip
+RUN pip install --upgrade pip
+
+# Copy requirements first for better caching
 COPY requirements.txt .
 
-# Create a virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Upgrade pip and install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# Install Cython first (required for IndicTransToolkit)
-RUN pip install --no-cache-dir cython
-
-# Install core dependencies first to catch any issues early
-RUN pip install --no-cache-dir fastapi==0.111.0 uvicorn==0.30.1 gunicorn==22.0.0
-
-# Install algoliasearch explicitly with version
-RUN pip install --no-cache-dir algoliasearch==3.0.0
-
-# Install remaining packages from requirements.txt
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy IndicTransToolkit and install it
-# NOTE: Assuming this is a local directory or a specific setup not provided.
-# If IndicTransToolkit is a pip installable package, this part might need adjustment.
-# COPY IndicTransToolkit/ ./IndicTransToolkit/
-# RUN pip install --no-cache-dir ./IndicTransToolkit
+# Download NLTK data (required for term simplification)
+RUN python -c "import nltk; nltk.download('punkt'); nltk.download('wordnet'); nltk.download('stopwords'); nltk.download('averaged_perceptron_tagger')"
 
-# Stage 2: Final image, smaller and more secure
-FROM python:3.10-slim-bullseye AS final
+# Copy application code
+COPY . .
 
-# Create a non-root user
-RUN adduser --system --no-create-home --uid 1001 appuser
-WORKDIR /app
+# Create necessary directories
+RUN mkdir -p /app/static /app/uploads /app/logs
 
-# Copy virtual environment from builder stage
-COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Set permissions
+RUN chmod +x /app
 
-# Set a build-time argument for the Firebase key
-ARG FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
+# Expose port (Render will set the PORT environment variable)
+EXPOSE $PORT
 
-# Set the environment variable from the build argument
-ENV FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64=$FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Copy main application files
-COPY --chown=appuser:appuser app.py .
-COPY --chown=appuser:appuser fraud_detection.py .
+# Command to run the application
+CMD uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 30
 
-# Copy OAuth integration files (FIXED: Added all OAuth files)
-COPY --chown=appuser:appuser oauth_routes.py .
-COPY --chown=appuser:appuser oauth_config.py .
-COPY --chown=appuser:appuser google_oauth.py .
-COPY --chown=appuser:appuser facebook_oauth.py .
-COPY --chown=appuser:appuser jwt_utils.py .
-
-# Copy data files
-COPY --chown=appuser:appuser DEhli.csv .
-COPY --chown=appuser:appuser ngo_fraud.csv .
-
-# Copy static directory with correct permissions from the start
-COPY --chown=appuser:appuser static/ ./static/
-
-# Switch to non-root user
-USER appuser
-
-# Expose the port that Gunicorn will run on internally
-EXPOSE 8000
-
-# Add a HEALTHCHECK to help cloud platforms monitor the container
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
-  CMD curl --fail http://localhost:8000/health || exit 1
-
-# Command to run the application using Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "app:app"]
