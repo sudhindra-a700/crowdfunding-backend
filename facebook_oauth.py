@@ -32,13 +32,13 @@ class FacebookOAuthHandler:
                 detail="Facebook OAuth is not configured"
             )
 
-        # Generate state token for security
-        state = self.jwt_manager.create_state_token(OAuthProvider.FACEBOOK)
+        # ✅ FIXED: Use .value to make enum JSON serializable
+        state = self.jwt_manager.create_state_token(OAuthProvider.FACEBOOK.value)
         
         # Store state in session (you might want to use Redis or database in production)
         request.session["oauth_state"] = state
 
-        # ✅ FIXED: Use oauth_config helper method instead of manual OAuth2Session
+        # Use oauth_config helper method
         authorization_url = self.oauth_config.get_facebook_auth_url(state)
 
         return RedirectResponse(url=authorization_url)
@@ -53,14 +53,14 @@ class FacebookOAuthHandler:
     ) -> TokenResponse:
         """Handle Facebook OAuth callback and get tokens"""
         
-        # Validate state token
-        if not self.jwt_manager.verify_state_token(state, OAuthProvider.FACEBOOK):
+        # ✅ FIXED: Use .value to make enum JSON serializable
+        if not self.jwt_manager.verify_state_token(state, OAuthProvider.FACEBOOK.value):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired state token."
             )
 
-        # ✅ FIXED: Use oauth_config helper method for token exchange
+        # Use oauth_config helper method for token exchange
         try:
             token = self.oauth_config.exchange_facebook_code_for_token(code, state)
         except Exception as e:
@@ -104,7 +104,7 @@ class FacebookOAuthHandler:
             "email": user_email,
             "name": user_name,
             "photo_url": user_photo,
-            "provider": OAuthProvider.FACEBOOK.value,
+            "provider": OAuthProvider.FACEBOOK.value,  # ✅ FIXED: Use .value
             "last_login": firestore.SERVER_TIMESTAMP
         }
 
@@ -142,7 +142,7 @@ class FacebookOAuthHandler:
 # Create global instance
 facebook_oauth_handler = FacebookOAuthHandler()
 
-# ✅ Export the exact function names that oauth_routes.py expects
+# Export the exact function names that oauth_routes.py expects
 def get_facebook_oauth_handler():
     """Get the Facebook OAuth handler instance"""
     return facebook_oauth_handler
