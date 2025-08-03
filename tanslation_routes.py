@@ -13,14 +13,14 @@ from pydantic import BaseModel, Field, validator
 from starlette.responses import JSONResponse
 
 # Import our services
-from complete_backend_translation_service import (
+from translation_service import (
     get_translation_service, 
     OptimizedTranslationService,
     SupportedLanguage,
     TranslationRequest,
     TranslationResponse
 )
-from complete_term_simplification_service import (
+from simplification_service import (
     get_simplification_service,
     EnhancedTermSimplificationService,
     ComplexityLevel,
