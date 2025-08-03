@@ -32,13 +32,13 @@ class GoogleOAuthHandler:
                 detail="Google OAuth is not configured"
             )
 
-        # Generate state token for security
-        state = self.jwt_manager.create_state_token(OAuthProvider.GOOGLE)
+        # ✅ FIXED: Use .value to make enum JSON serializable
+        state = self.jwt_manager.create_state_token(OAuthProvider.GOOGLE.value)
         
         # Store state in session (you might want to use Redis or database in production)
         request.session["oauth_state"] = state
 
-        # ✅ FIXED: Use oauth_config helper method instead of manual OAuth2Session
+        # Use oauth_config helper method
         authorization_url = self.oauth_config.get_google_auth_url(state)
 
         return RedirectResponse(url=authorization_url)
@@ -53,14 +53,14 @@ class GoogleOAuthHandler:
     ) -> TokenResponse:
         """Handle Google OAuth callback and get tokens"""
         
-        # Validate state token
-        if not self.jwt_manager.verify_state_token(state, OAuthProvider.GOOGLE):
+        # ✅ FIXED: Use .value to make enum JSON serializable
+        if not self.jwt_manager.verify_state_token(state, OAuthProvider.GOOGLE.value):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired state token."
             )
 
-        # ✅ FIXED: Use oauth_config helper method for token exchange
+        # Use oauth_config helper method for token exchange
         try:
             token = self.oauth_config.exchange_google_code_for_token(code, state)
         except Exception as e:
@@ -103,7 +103,7 @@ class GoogleOAuthHandler:
             "email": user_email,
             "name": user_name,
             "photo_url": user_photo,
-            "provider": OAuthProvider.GOOGLE.value,
+            "provider": OAuthProvider.GOOGLE.value,  # ✅ FIXED: Use .value
             "last_login": firestore.SERVER_TIMESTAMP
         }
 
@@ -138,7 +138,7 @@ class GoogleOAuthHandler:
 # Create global instance
 google_oauth_handler = GoogleOAuthHandler()
 
-# ✅ Export the exact function names that oauth_routes.py expects
+# Export the exact function names that oauth_routes.py expects
 def get_google_oauth_handler():
     """Get the Google OAuth handler instance"""
     return google_oauth_handler
