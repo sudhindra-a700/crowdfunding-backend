@@ -1,127 +1,75 @@
-# HAVEN Crowdfunding Platform - Complete Backend Requirements
-# Updated with translation and simplification services
-
-# Core FastAPI and web framework
+# HAVEN Backend Requirements - Fixed Version
+# Core FastAPI dependencies
 fastapi==0.111.0
-uvicorn==0.30.1
+uvicorn[standard]==0.30.1
 pydantic==2.7.4
-starlette==0.37.2
+pydantic-settings==2.3.4
 
-# OAuth and Authentication
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-google-auth-oauthlib==1.2.0
-google-api-python-client==2.134.0
-PyJWT==2.8.0
-httpx==0.27.0
-
-# Firebase Integration
-firebase-admin<=7.0.0
-google-cloud-firestore==2.16.0
-
-# Translation Services (M2M100 and supporting libraries)
-torch==2.3.1
-transformers==4.42.3
-tokenizers==0.19.1
-sentencepiece==0.2.0
-sacremoses==0.1.1
-
-# Text Processing and NLP
-nltk==3.8.1
-textstat==0.7.3
-spacy==3.7.5
-
-# Term Simplification and Language Processing
-datasets==2.20.0
-scikit-learn==1.5.1
-
-# Fraud Detection (existing)
-torch==2.3.1  # Already included above
-transformers==4.42.3  # Already included above
-
-# Database and Caching
-redis==5.0.7
+# Database and ORM
+sqlalchemy==2.0.31
+alembic==1.13.2
 psycopg2-binary==2.9.9
 
-# Data Processing
-pandas==2.2.2
-numpy==1.26.4
+# Authentication and Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+PyJWT==2.8.0
+cryptography==42.0.8
+
+# OAuth Dependencies
+google-auth-oauthlib==1.2.0
+google-api-python-client==2.134.0
+authlib==1.3.1
 
 # HTTP and API clients
 requests==2.32.3
+httpx==0.27.0
 aiohttp==3.9.5
 
-# File processing
+# CORS Support (FIXED - was python-cors)
+fastapi-cors==0.0.6
+
+# File handling and validation
 python-multipart==0.0.9
 python-dotenv==1.0.1
 
-# Monitoring and Logging
+# Email and notifications
+emails==0.6.0
+jinja2==3.1.4
+
+# Logging and monitoring
 structlog==24.2.0
 
-# Development and Testing (optional)
+# Testing
 pytest==8.2.2
 pytest-asyncio==0.23.7
 
-# Additional utilities
+# Utilities
 python-dateutil==2.9.0
 pytz==2024.1
 
-# Security
-cryptography==42.0.8
-
-# Performance optimization
+# JSON handling
 orjson==3.10.5
 
-# Environment and configuration
-pydantic-settings==2.3.4
+# Translation and NLP (NEW - for translation features)
+transformers==4.30.0
+torch==2.0.1
+nltk==3.8.1
+sentencepiece==0.1.99
 
-# CORS and middleware
-python-cors==1.7.0
+# Term Simplification (NEW)
+wordnet==0.0.1b2
+textstat==0.7.3
 
-# Additional ML dependencies for enhanced features
-accelerate==0.32.1  # For faster model loading
-optimum==1.21.2     # Model optimization
+# Performance and caching
+redis==5.0.7
+celery==5.3.1
 
-# Language detection (optional enhancement)
-langdetect==1.0.9
+# Development tools
+black==24.4.2
+isort==5.13.2
+flake8==7.1.0
 
-# Text preprocessing
-regex==2024.5.15
-unidecode==1.3.8
-
-# Async support
-asyncio-mqtt==0.16.2  # If MQTT needed
-aiofiles==23.2.1      # Async file operations
-
-# Monitoring and health checks
-psutil==6.0.0
-
-# Additional data formats
-openpyxl==3.1.5      # Excel support
-PyPDF2==3.0.1        # PDF processing
-
-# Web scraping (if needed for data collection)
-beautifulsoup4==4.12.3
-lxml==5.2.2
-
-# Image processing (if needed)
-Pillow==10.4.0
-
-# Additional text processing
-ftfy==6.2.0          # Text fixing
-emoji==2.12.1        # Emoji handling
-
-# Performance monitoring
-memory-profiler==0.61.0
-
-# Additional security
-bleach==6.1.0        # HTML sanitization
-
-# Deployment helpers
-gunicorn==22.0.0     # Alternative WSGI server
-whitenoise==6.7.0    # Static file serving
-
-# Note: Some packages may have version conflicts
-# Test thoroughly and adjust versions as needed
-# Remove duplicates and resolve conflicts during installation
+# Production server
+gunicorn==22.0.0
 
