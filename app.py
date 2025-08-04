@@ -1,7 +1,7 @@
 # app.py
 # This is the complete, corrected code for your FastAPI backend,
-# incorporating the fixes for environment variable handling, CORS,
-# and adding the missing OAuth callback endpoint for both Google and Facebook.
+# incorporating the features for registration validation, JWT authentication,
+# OAuth, and payment services.
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ from typing import List, Optional, Dict, Any
 import json
 import uuid
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import jwt
 import hashlib
 import secrets
@@ -29,8 +29,8 @@ from dotenv import load_dotenv  # Add this import
 load_dotenv()
 
 # --- Environment Variable Configuration ---
-FRONTEND_URL = os.getenv("FRONTEND_BASE_URI", "http://localhost:8501")
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+FRONTEND_URL = os.getenv("FRONTEND_BASE_URI", "http://haven-streamlit-frontend.onrender.com")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://haven-fastapi-backend.onrender.com")
 
 # Google OAuth
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -42,7 +42,8 @@ FACEBOOK_CLIENT_ID = os.getenv("FACEBOOK_CLIENT_ID")
 FACEBOOK_CLIENT_SECRET = os.getenv("FACEBOOK_CLIENT_SECRET")
 FACEBOOK_REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI")
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_SECRET = os.getenv("JWT_SECRET_KEY", "haven-secret-key-2024")
+JWT_ALGORITHM = "HS256"
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -71,10 +72,88 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
-JWT_SECRET = os.getenv("JWT_SECRET_KEY", "haven-secret-key-2024")
-JWT_ALGORITHM = "HS256"
 
-# Load and process CSV data
+# In-memory "database" for demonstration purposes
+# In a real application, this would be a persistent database (e.g., SQL or NoSQL)
+USERS_DB = {}
+CAMPAIGNS_DATA = []
+
+# --- Pydantic Models for Data Validation ---
+
+class UserRegistration(BaseModel):
+    """Model for individual user registration, ensuring all fields are present."""
+    full_name: str
+    email: EmailStr
+    password: str
+    phone: str
+    address: str
+    document_type: str
+    # Note: `document_file` will be handled as a separate UploadFile object.
+
+class OrganizationRegistration(BaseModel):
+    """Model for organization registration, ensuring all fields are present."""
+    org_name: str
+    org_phone: str
+    org_type: str
+    org_description: str
+    contact_person: str
+    contact_email: EmailStr
+    password: str
+    # Note: `certificate_file` will be handled as a separate UploadFile object.
+
+class LoginDetails(BaseModel):
+    """Model for user login."""
+    email: EmailStr
+    password: str
+
+# --- JWT Utility Functions ---
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Creates a JWT token with an expiration time."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=30)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str):
+    """Verifies a JWT token and returns the payload."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        # Token has expired
+        return None
+    except jwt.InvalidTokenError:
+        # Invalid token
+        return None
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Dependency to get the current user from the JWT token in the Authorization header.
+    This is used to protect API routes.
+    """
+    token = credentials.credentials
+    payload = verify_token(token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_email = payload.get("sub")
+    if user_email is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user_email
+
+# --- Load and process CSV data ---
 def load_campaign_data():
     """Load and process campaign data from CSV file"""
     try:
@@ -246,7 +325,8 @@ class InstamojoPaymentService:
 # Initialize payment service
 payment_service = InstamojoPaymentService()
 
-# Root endpoint
+# --- API Endpoints ---
+
 @app.get("/")
 async def root():
     return {
@@ -271,7 +351,11 @@ async def root():
             "categories": "/api/categories",
             "trending": "/api/trending",
             "google_oauth": "/auth/google/callback",
-            "facebook_oauth": "/auth/facebook/callback" # Added this endpoint
+            "facebook_oauth": "/auth/facebook/callback",
+            "register_user": "/api/register",
+            "register_organization": "/api/register_organization",
+            "login": "/api/login",
+            "users_me": "/api/users/me (protected)"
         }
     }
 
@@ -337,7 +421,126 @@ async def api_info():
         }
     }
 
-# Campaign endpoints
+# --- Registration and Login Endpoints ---
+
+@app.post("/api/register")
+async def register_user(
+    full_name: str = Form(...),
+    email: EmailStr = Form(...),
+    password: str = Form(...),
+    phone: str = Form(...),
+    address: str = Form(...),
+    document_type: str = Form(...),
+    document_file: UploadFile = File(...)
+):
+    """
+    Registers a new individual user.
+    All fields are required.
+    """
+    if email in USERS_DB:
+        raise HTTPException(status_code=400, detail="User with this email already exists")
+
+    # Simulate saving user data
+    USERS_DB[email] = {
+        "full_name": full_name,
+        "email": email,
+        "hashed_password": hashlib.sha256(password.encode()).hexdigest(),
+        "phone": phone,
+        "address": address,
+        "document_type": document_type,
+        "is_verified": False,
+        "account_type": "individual",
+    }
+    
+    # Create a JWT token for the new user
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": email, "account_type": "individual"}, expires_delta=access_token_expires
+    )
+
+    return {"message": "Registration successful!", "access_token": access_token}
+
+
+@app.post("/api/register_organization")
+async def register_organization(
+    org_name: str = Form(...),
+    org_phone: str = Form(...),
+    org_type: str = Form(...),
+    org_description: str = Form(...),
+    contact_person: str = Form(...),
+    contact_email: EmailStr = Form(...),
+    password: str = Form(...),
+    certificate_file: UploadFile = File(...)
+):
+    """
+    Registers a new organization.
+    All fields are required.
+    """
+    if contact_email in USERS_DB:
+        raise HTTPException(status_code=400, detail="Organization with this email already exists")
+
+    # Simulate saving organization data
+    USERS_DB[contact_email] = {
+        "org_name": org_name,
+        "contact_email": contact_email,
+        "hashed_password": hashlib.sha256(password.encode()).hexdigest(),
+        "org_phone": org_phone,
+        "org_type": org_type,
+        "org_description": org_description,
+        "is_verified": False,
+        "account_type": "organization",
+    }
+    
+    # Create a JWT token for the new organization
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": contact_email, "account_type": "organization"}, expires_delta=access_token_expires
+    )
+
+    return {"message": "Organization registration successful!", "access_token": access_token}
+
+
+@app.post("/api/login")
+async def login_user(login_details: LoginDetails):
+    """
+    Authenticates a user and returns a JWT token.
+    """
+    user_data = USERS_DB.get(login_details.email)
+    if not user_data:
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+    
+    hashed_password = hashlib.sha256(login_details.password.encode()).hexdigest()
+    if hashed_password != user_data["hashed_password"]:
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+    
+    # Create a JWT token for the authenticated user
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": user_data["email"], "account_type": user_data["account_type"]}, 
+        expires_delta=access_token_expires
+    )
+    
+    return {"message": "Login successful!", "access_token": access_token}
+
+
+@app.get("/api/users/me")
+def read_current_user(current_user_email: str = Depends(get_current_user)):
+    """
+    A protected endpoint that returns information about the currently authenticated user.
+    This demonstrates how to use the JWT token to secure a route.
+    """
+    user_data = USERS_DB.get(current_user_email)
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    # Remove sensitive data like hashed password before returning
+    user_data_safe = user_data.copy()
+    user_data_safe.pop("hashed_password", None)
+    
+    return user_data_safe
+
+# --- Campaign Endpoints ---
+
 @app.get("/api/campaigns")
 async def get_campaigns(
     page: int = 1,
@@ -548,7 +751,7 @@ async def get_platform_stats():
     }
 
 # --- OAuth Callback Endpoints ---
-@app.get("/auth/google/callback")
+@app.get("/google/callback")
 async def google_auth_callback(code: str):
     """
     Handles the callback from the Google OAuth server.
@@ -639,12 +842,13 @@ async def not_found_handler(request: Request, exc: HTTPException):
                 "/health", 
                 "/api",
                 "/api/campaigns",
-                "/api/search",
-                "/api/categories",
-                "/api/trending",
-                "/auth/google/callback",
-                "/auth/facebook/callback", # Added this endpoint
-                "/docs"
+                "/api/dashboard",
+                "/api/register",
+                "/api/register_organization",
+                "/api/login",
+                "/api/users/me (protected)",
+                "/docs",
+                "/redoc"
             ]
         }
     )
