@@ -27,8 +27,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Environment Variable Configuration ---
-FRONTEND_URL = os.getenv("FRONTEND_BASE_URI", "http://localhost:8501")
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+FRONTEND_URL = os.getenv("FRONTEND_BASE_URI", "http://haven-streamlit-frontend.onrender.com")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://haven-fastapi-backend.onrender.com")
 
 # Google OAuth
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
