@@ -39,3 +39,4 @@ torchvision<=0.18.0
 matplotlib==3.8.4
 transformers==4.40.2
 datasets==2.19.1
+firebase-admin==6.5.0
