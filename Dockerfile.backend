@@ -1,18 +1,19 @@
 # HAVEN Crowdfunding Platform - Backend Dockerfile for Render
 # Optimized for translation and simplification services
+# FIXED to use a startup script for robust port handling
 
 FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Set environment variables
+# Set environment variables to optimize Python and Pip
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies
+# Install system dependencies required for the application
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -25,31 +26,40 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Copy requirements first for better caching
+# Copy requirements first to leverage Docker layer caching
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
-# Download NLTK data (required for term simplification)
+# Download NLTK data required for the application during the build
 RUN python -c "import nltk; nltk.download('punkt'); nltk.download('wordnet'); nltk.download('stopwords'); nltk.download('averaged_perceptron_tagger')"
 
-# Copy application code
+# Copy the rest of the application code
 COPY . .
+
+# --- FIX: Incorporate the startup script ---
+# Copy the startup script into the container
+COPY start.sh .
+# Make the script executable
+RUN chmod +x ./start.sh
 
 # Create necessary directories
 RUN mkdir -p /app/static /app/uploads /app/logs
 
-# Set permissions
+# Set permissions on the app directory
 RUN chmod +x /app
 
-# Expose port (Render will set the PORT environment variable)
-EXPOSE $PORT
+# --- FIX: Corrected HEALTHCHECK and EXPOSE ---
+# The EXPOSE instruction is for documentation and requires a static port number.
+# It's not strictly needed by Render, but we can set it to the default port used in start.sh
+EXPOSE 8000
 
-# Health check
+# The HEALTHCHECK now uses the same default port logic as the start.sh script,
+# making it work correctly both on Render and during local testing.
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# The shell form of CMD correctly substitutes the $PORT variable
-CMD uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 30
-
+# --- FIX: Set the startup script as the command to run ---
+# This is the most reliable way to start the server.
+CMD ["./start.sh"]
