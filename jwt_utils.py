@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 import logging
-from pydantic import BaseModel, Field # Import BaseModel and Field
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -82,33 +82,25 @@ class JWTManager:
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
             return False
 
-
-# Global JWT manager instance
 jwt_manager = JWTManager()
 
-
 def get_jwt_manager() -> JWTManager:
-    """Get the global JWT manager instance"""
     return jwt_manager
 
-
-class TokenResponse(BaseModel): # Inherit from BaseModel
-    """Token response model"""
+class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     refresh_token: Optional[str] = None
-    expires_in: int = Field(default=3600, description="Expires in seconds") # 24 hours in seconds
-    user_info: Optional[Dict[str, Any]] = None # Added user_info to the response model
-    firebase_custom_token: Optional[str] = None # Added a field for the Firebase custom token
+    expires_in: int = Field(default=3600, description="Expires in seconds")
+    user_info: Optional[Dict[str, Any]] = None
+    firebase_custom_token: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
         result = {
             "access_token": self.access_token,
             "token_type": self.token_type,
             "expires_in": self.expires_in
         }
-        
         if self.refresh_token:
             result["refresh_token"] = self.refresh_token
         if self.user_info:
