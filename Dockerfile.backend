@@ -38,11 +38,13 @@ RUN python -c "import nltk; nltk.download('punkt'); nltk.download('wordnet'); nl
 # Copy the rest of the application code
 COPY . .
 
-# --- FIX: Incorporate the startup script ---
 # Copy the startup script into the container
 COPY start.sh .
-# Make the script executable
-RUN chmod +x ./start.sh
+
+# --- NEW: Verify the startup script exists and is executable ---
+# This line will cause the build to fail if start.sh was not copied,
+# preventing runtime errors.
+RUN chmod +x ./start.sh && test -f ./start.sh
 
 # Create necessary directories
 RUN mkdir -p /app/static /app/uploads /app/logs
@@ -50,16 +52,12 @@ RUN mkdir -p /app/static /app/uploads /app/logs
 # Set permissions on the app directory
 RUN chmod +x /app
 
-# --- FIX: Corrected HEALTHCHECK and EXPOSE ---
-# The EXPOSE instruction is for documentation and requires a static port number.
-# It's not strictly needed by Render, but we can set it to the default port used in start.sh
+# Expose the port that the application will run on.
 EXPOSE 8000
 
-# The HEALTHCHECK now uses the same default port logic as the start.sh script,
-# making it work correctly both on Render and during local testing.
+# The HEALTHCHECK uses the same default port logic as the start.sh script
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# --- FIX: Set the startup script as the command to run ---
-# This is the most reliable way to start the server.
+# Set the startup script as the command to run.
 CMD ["./start.sh"]
