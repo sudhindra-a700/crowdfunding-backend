@@ -49,14 +49,14 @@ class OAuthConfig:
             missing_vars.append("GOOGLE_CLIENT_ID")
         if not self.google_client_secret:
             missing_vars.append("GOOGLE_CLIENT_SECRET")
-        if not self.google_redirect_uri:  # Check redirect URI too
+        if not self.google_redirect_uri:
             missing_vars.append("GOOGLE_REDIRECT_URI")
             
         if not self.facebook_client_id:
             missing_vars.append("FACEBOOK_CLIENT_ID")
         if not self.facebook_client_secret:
             missing_vars.append("FACEBOOK_CLIENT_SECRET")
-        if not self.facebook_redirect_uri:  # Check redirect URI too
+        if not self.facebook_redirect_uri:
             missing_vars.append("FACEBOOK_REDIRECT_URI")
             
         if missing_vars:
@@ -92,8 +92,7 @@ class OAuthConfig:
     def get_google_auth_url(self, state: str) -> str:
         """Generate Google OAuth authorization URL"""
         oauth_session = self.create_google_oauth_session(state)
-        # ✅ FIXED: Use create_authorization_url instead of authorization_url
-        auth_url = oauth_session.create_authorization_url(
+        auth_url, _ = oauth_session.create_authorization_url(
             self.google_auth_url,
             access_type="offline",
             include_granted_scopes="true"
@@ -103,8 +102,7 @@ class OAuthConfig:
     def get_facebook_auth_url(self, state: str) -> str:
         """Generate Facebook OAuth authorization URL"""
         oauth_session = self.create_facebook_oauth_session(state)
-        # ✅ FIXED: Use create_authorization_url instead of authorization_url
-        auth_url = oauth_session.create_authorization_url(self.facebook_auth_url)
+        auth_url, _ = oauth_session.create_authorization_url(self.facebook_auth_url)
         return auth_url
 
     def exchange_google_code_for_token(self, code: str, state: str) -> Dict[str, Any]:
@@ -129,42 +127,26 @@ class OAuthConfig:
 
     @property
     def is_google_configured(self) -> bool:
-        """Check if Google OAuth is properly configured"""
-        return bool(
-            self.google_client_id and 
-            self.google_client_secret and 
-            self.google_redirect_uri
-        )
+        return bool(self.google_client_id and self.google_client_secret and self.google_redirect_uri)
 
     @property
     def is_facebook_configured(self) -> bool:
-        """Check if Facebook OAuth is properly configured"""
-        return bool(
-            self.facebook_client_id and 
-            self.facebook_client_secret and 
-            self.facebook_redirect_uri
-        )
+        return bool(self.facebook_client_id and self.facebook_client_secret and self.facebook_redirect_uri)
 
-# Global configuration instance
 _oauth_config = None
 
 def get_oauth_config() -> OAuthConfig:
-    """Get the global OAuth configuration instance"""
     global _oauth_config
     if _oauth_config is None:
         _oauth_config = OAuthConfig()
     return _oauth_config
 
-# OAuth Provider Enum
 from enum import Enum
-
 class OAuthProvider(Enum):
     GOOGLE = "google"
     FACEBOOK = "facebook"
 
-# OAuth User Model
 from pydantic import BaseModel
-
 class OAuthUser(BaseModel):
     id: str
     email: str
@@ -172,4 +154,3 @@ class OAuthUser(BaseModel):
     picture: Optional[str] = None
     provider: str
     provider_id: str
-
