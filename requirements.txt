@@ -56,5 +56,5 @@ firebase-admin==6.5.0 # Marked as unused [cite: 112, 279]
 instamojo-wrapper==1.2.0 # Marked as unused [cite: 113, 279]
 
 # Other
-shapely==0.45.0 # Note: The version in the PDF is 0.45.0. This seems very old. Corrected to a more recent, stable version if needed.
+shapely>=0.45.0 # Note: The version in the PDF is 0.45.0. This seems very old. Corrected to a more recent, stable version if needed.
 typing-extensions==4.8.0
