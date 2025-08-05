@@ -47,18 +47,25 @@ ALGORITHM = "HS256"
 # In-memory "database" for demonstration purposes
 MOCK_DATABASE = {
     "campaigns": [
-        {"id": "camp1", "title": "Clean Water for All", "organization": "WaterOrg", "category": "Environment", "description": "...", "target_amount": 10000, "current_amount": 7500},
-        {"id": "camp2", "title": "Education for Rural Children", "organization": "EduFund", "category": "Education", "description": "...", "target_amount": 5000, "current_amount": 4000},
-        {"id": "camp3", "title": "Medical Supplies for Hospitals", "organization": "HealthAid", "category": "Health", "description": "...", "target_amount": 20000, "current_amount": 18000},
-        {"id": "camp4", "title": "Sustainable Farming Initiative", "organization": "GreenHands", "category": "Environment", "description": "...", "target_amount": 8000, "current_amount": 2500},
+        {"id": "camp1", "title": "Clean Water for All", "organization": "WaterOrg", "category": "Environment", "description": "...", "target_amount": 10000, "current_amount": 7500, "verified": True},
+        {"id": "camp2", "title": "Education for Rural Children", "organization": "EduFund", "category": "Education", "description": "...", "target_amount": 5000, "current_amount": 4000, "verified": True},
+        {"id": "camp3", "title": "Medical Supplies for Hospitals", "organization": "HealthAid", "category": "Health", "description": "...", "target_amount": 20000, "current_amount": 18000, "verified": True},
+        {"id": "camp4", "title": "Sustainable Farming Initiative", "organization": "GreenHands", "category": "Environment", "description": "...", "target_amount": 8000, "current_amount": 2500, "verified": False},
     ],
     "users": {
-        "test@example.com": {
-            "name": "John Doe",
-            "email": "test@example.com",
+        "individual@test.com": {
+            "name": "R. Prakash",
+            "email": "individual@test.com",
             "password": "hashed_password", # This should be a real hash
-            "user_type": "donor",
+            "user_type": "individual",
             "profile_image": None # Store base64 string here
+        },
+        "org@test.com": {
+            "name": "Green Future Foundation",
+            "email": "org@test.com",
+            "password": "hashed_password",
+            "user_type": "organization",
+            "profile_image": None
         }
     }
 }
@@ -91,7 +98,17 @@ class TextToSimplify(BaseModel):
     text: str
     target_language: str = "en"
 
-# --- Mock Authentication Dependency ---
+class Campaign(BaseModel):
+    id: str
+    title: str
+    organization: str
+    category: str
+    description: str
+    target_amount: float
+    current_amount: float
+    verified: bool
+
+# --- Authentication Dependency ---
 def get_current_user_email(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())):
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET_KEY, algorithms=[ALGORITHM])
@@ -107,17 +124,17 @@ def get_current_user_email(credentials: HTTPAuthorizationCredentials = Depends(H
 async def root():
     return {"message": "Welcome to the HAVEN Crowdfunding API!"}
 
-# Mock user login endpoint
+# User login endpoint
 @app.post("/api/login")
 async def login(login_data: LoginRequest):
     user = MOCK_DATABASE["users"].get(login_data.email)
     if user and user["password"] == "hashed_password": # Replace with real hash check
         token_data = {"sub": user["email"]}
         token = jwt.encode(token_data, JWT_SECRET_KEY, algorithm=ALGORITHM)
-        return JSONResponse(content={"token": token, "user": user})
+        return JSONResponse(content={"token": token, "user_type": user["user_type"]})
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
-# New endpoint to get the authenticated user's data
+# Get authenticated user's data
 @app.get("/api/user/me")
 async def get_user_me(user_email: str = Depends(get_current_user_email)):
     user = MOCK_DATABASE["users"].get(user_email)
@@ -125,7 +142,7 @@ async def get_user_me(user_email: str = Depends(get_current_user_email)):
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-# New endpoint to update user profile details
+# Update user profile details
 @app.post("/api/user/profile")
 async def update_user_profile(profile_data: UpdateProfile, user_email: str = Depends(get_current_user_email)):
     user = MOCK_DATABASE["users"].get(user_email)
@@ -134,14 +151,13 @@ async def update_user_profile(profile_data: UpdateProfile, user_email: str = Dep
     user["name"] = profile_data.name
     return {"message": "Profile updated successfully", "user": user}
 
-# New endpoint to upload a profile image
+# Upload a profile image
 @app.post("/api/user/profile/image")
 async def upload_profile_image(file: UploadFile = File(...), user_email: str = Depends(get_current_user_email)):
     user = MOCK_DATABASE["users"].get(user_email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Read the file and encode to base64
     image_bytes = await file.read()
     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
     
@@ -149,22 +165,23 @@ async def upload_profile_image(file: UploadFile = File(...), user_email: str = D
     
     return {"message": "Profile image uploaded successfully"}
 
-# Placeholder endpoint for creating a new campaign
+# Placeholder for creating a new campaign
 @app.post("/api/campaigns")
 async def create_campaign(user_email: str = Depends(get_current_user_email)):
-    # Logic for creating a campaign would go here
     return {"message": "Campaign creation endpoint is a placeholder."}
 
-# Existing endpoints (trending, search, etc.)
+# Existing campaign endpoints
+@app.get("/api/campaigns", response_model=List[Campaign])
+async def get_all_campaigns():
+    return MOCK_DATABASE["campaigns"]
+
 @app.get("/api/trending")
 async def get_trending_campaigns():
-    # Return the first 3 campaigns as trending for now
     trending = MOCK_DATABASE["campaigns"][:3]
     return {"trending_campaigns": trending}
 
 @app.get("/api/search")
 async def search_campaigns(query: str):
-    # Mock search functionality
     results = [c for c in MOCK_DATABASE["campaigns"] if query.lower() in c["title"].lower()]
     return {"search_results": results}
 
@@ -182,13 +199,10 @@ async def get_campaign_details(campaign_id: str):
 
 @app.post("/api/process_text")
 async def process_text(text_data: TextToSimplify):
-    # This endpoint is a placeholder for a term simplification API call
-    # Replace this with a real call to the Gemini API
-    # For now, it will just return a placeholder response
     simplified_text = f"Simplified version of '{text_data.text}' in {text_data.target_language}."
     return {"simplified_text": simplified_text}
 
-# --- OAuth Endpoints (unchanged) ---
+# --- OAuth Endpoints ---
 @app.get("/auth/google/callback")
 async def google_auth_callback(code: str, request: Request):
     if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
@@ -215,12 +229,17 @@ async def facebook_auth_callback(code: str, request: Request):
         return RedirectResponse(url=f"{FRONTEND_URL}?token_info={token_info['access_token']}")
     except requests.exceptions.RequestException as e: raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get Facebook token: {e}")
 
-# Custom 404 handler (unchanged)
+# Custom 404 handler
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=404, content={"error": "Endpoint not found", "message": f"The requested endpoint {request.url.path} was not found"})
 
+# Health check for deployment services
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 # --- Main Entry Point ---
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
