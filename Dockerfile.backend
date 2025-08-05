@@ -1,6 +1,5 @@
 # HAVEN Crowdfunding Platform - Backend Dockerfile for Render
-# Optimized for translation and simplification services
-# FIXED to use a startup script for robust port handling
+# ALTERNATIVE using a direct CMD instruction
 
 FROM python:3.11-slim
 
@@ -13,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies required for the application
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -26,7 +25,7 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Copy requirements first to leverage Docker layer caching
+# Copy requirements first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
@@ -38,26 +37,20 @@ RUN python -c "import nltk; nltk.download('punkt'); nltk.download('wordnet'); nl
 # Copy the rest of the application code
 COPY . .
 
-# Copy the startup script into the container
-COPY start.sh .
-
-# --- NEW: Verify the startup script exists and is executable ---
-# This line will cause the build to fail if start.sh was not copied,
-# preventing runtime errors.
-RUN chmod +x ./start.sh && test -f ./start.sh
-
 # Create necessary directories
 RUN mkdir -p /app/static /app/uploads /app/logs
 
 # Set permissions on the app directory
 RUN chmod +x /app
 
-# Expose the port that the application will run on.
+# Expose the port. Render will detect the service on the port specified by the PORT env var.
 EXPOSE 8000
 
-# The HEALTHCHECK uses the same default port logic as the start.sh script
+# The HEALTHCHECK uses the same default port logic
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Set the startup script as the command to run.
-CMD ["./start.sh"]
+# --- ALTERNATIVE START COMMAND ---
+# This CMD runs directly in a shell, which correctly substitutes the $PORT variable.
+# This removes the need for the start.sh script.
+CMD uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 30
